@@ -4,8 +4,51 @@
 
 Build an AI system that classifies PLC compilation errors and suggests fixes for OTee's customers.
 
-**Input**: Raw error logs from Beremiz PLC build pipeline
+**Input**: Raw error logs from Beremiz PLC build pipeline (required), optionally source XML
 **Output**: Classification (severity, stage, complexity) + actionable fix suggestions
+
+---
+
+## Context: Beremiz PLC Development
+
+### What is Beremiz?
+
+Beremiz is an open-source IDE for developing SoftPLC applications. Engineers use visual editors
+(Function Block Diagram, Ladder Diagram) or text editors (Structured Text) to create PLC logic.
+The IDE saves projects in PLCopen XML format.
+
+### Build Pipeline
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  PLCopen XML    │────▶│  IEC 61131-3    │────▶│    C Code       │────▶│  SoftPLC Binary │
+│  (project file) │     │  ST Code        │     │  (intermediate) │     │  (.so library)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+     [input]              [code_generation]       [iec_compilation]       [c_compilation]
+                              via Beremiz            via matiec/iec2c         via gcc
+```
+
+Errors can occur at any stage, and one early error can cascade into multiple downstream errors.
+
+### Sample Data Structure
+
+| File | Type | Description |
+|------|------|-------------|
+| `*.xml` | **Input** | PLCopen XML project file (source code) |
+| `*.txt` | **Output** | Build error log from Beremiz CLI |
+
+The error log contains embedded code snippets from the source, so classification is possible
+even without the source XML. The XML provides additional context for better fix suggestions.
+
+### Documentation Landscape
+
+There is no single source of truth for Beremiz/IEC 61131-3:
+- Beremiz docs are incomplete
+- IEC 61131-3 spec is paid ($300+)
+- Engineers rely on vendor docs (Beckhoff, Siemens) and forums
+
+This fragmentation is why an AI assistant is valuable - we embed the scattered knowledge
+into the system prompt.
 
 ---
 
@@ -44,7 +87,7 @@ Raw Error Log
          ▼
 ┌─────────────────┐
 │ LLM Classifier  │  ← Does heavy lifting: classification + suggestions
-│ - severity      │
+│ - severity      │     (optionally with web search for deep analysis)
 │ - complexity    │
 │ - root cause    │
 │ - fix snippets  │
@@ -58,33 +101,42 @@ Raw Error Log
 ### 1. Data Models (`models.py`)
 
 ```python
-@dataclass
-class ParsedError:
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class ClassifyRequest(BaseModel):
+    """API request model."""
+    error_log: str                          # Required: build output/error log
+    source_xml: str | None = None           # Optional: PLCopen XML for richer suggestions
+    deep_analysis: bool = False             # Optional: enable web search for difficult cases
+
+class ParsedError(BaseModel):
+    """Output from lightweight parser."""
     raw_text: str
     cleaned_text: str
-    detected_stage: str | None      # regex guess: xml_validation, code_generation, etc.
-    line_numbers: list[int]         # extracted line refs
-    source_file: str | None         # if XML provided
+    detected_stage: str | None              # regex guess: xml_validation, code_generation, etc.
+    line_numbers: list[int]                 # extracted line refs
+    has_source_xml: bool                    # whether XML context was provided
 
-@dataclass
-class ErrorClassification:
+class ErrorClassification(BaseModel):
+    """Classification result."""
     severity: Literal["blocking", "warning", "info"]
     stage: Literal["xml_validation", "code_generation", "iec_compilation", "c_compilation"]
     complexity: Literal["trivial", "moderate", "complex"]
 
-@dataclass
-class FixSuggestion:
+class FixSuggestion(BaseModel):
+    """A single fix suggestion."""
     description: str
     root_cause: str
-    code_before: str | None
-    code_after: str | None
-    confidence: float               # 0.0 - 1.0
+    code_before: str | None = None          # Only if source_xml provided
+    code_after: str | None = None           # Only if source_xml provided
+    confidence: float = Field(ge=0.0, le=1.0)
 
-@dataclass
-class ClassificationResult:
+class ClassifyResponse(BaseModel):
+    """API response model."""
     classification: ErrorClassification
-    suggestions: list[FixSuggestion]  # 1-3 suggestions
-    raw_llm_response: str | None      # for debugging
+    suggestions: list[FixSuggestion]        # 1-3 suggestions
+    used_web_search: bool = False           # Whether deep analysis was triggered
 ```
 
 ### 2. Lightweight Parser (`parser.py`)
@@ -92,7 +144,7 @@ class ClassificationResult:
 Regex-based extraction, no complex grammar:
 
 ```python
-def parse_error_log(raw_log: str, source_xml: str = None) -> ParsedError:
+def parse_error_log(raw_log: str, source_xml: str | None = None) -> ParsedError:
     """
     1. Detect stage from keywords:
        - "XSD schema" / "XML" → xml_validation
@@ -111,13 +163,30 @@ def parse_error_log(raw_log: str, source_xml: str = None) -> ParsedError:
 
 ### 3. LLM Classifier (`classifier.py`)
 
-**Key Decision**: Embed IEC 61131-3 knowledge in system prompt rather than using RAG/web search.
+**Primary approach**: Embed IEC 61131-3 knowledge in system prompt.
+
+**Fallback**: Web search for edge cases when `deep_analysis=True`.
 
 **Rationale**:
 - IEC 61131-3 is niche; LLM training data is limited
-- RAG setup would exceed time budget
-- Few-shot examples + domain context in prompt is sufficient
-- Only 2 base error types to handle
+- Beremiz documentation is incomplete and scattered
+- Few-shot examples + domain context in prompt handles common cases
+- Web search provides fallback for unknown error patterns
+
+**Two-Tier Response Strategy**:
+
+```python
+async def classify(request: ClassifyRequest) -> ClassifyResponse:
+    # Fast path: embedded knowledge only
+    result = await classify_with_embedded_knowledge(request)
+
+    # If deep_analysis enabled and confidence is low, try web search
+    if request.deep_analysis and result.suggestions[0].confidence < 0.7:
+        result = await classify_with_web_search(request, result)
+        result.used_web_search = True
+
+    return result
+```
 
 **System Prompt Structure**:
 
@@ -129,7 +198,7 @@ def parse_error_log(raw_log: str, source_xml: str = None) -> ParsedError:
 5. Output format specification (JSON)
 ```
 
-**LLM Choice**: Anthropic Claude or OpenAI GPT-4 (configurable via env var)
+**LLM Choice**: Anthropic Claude (configurable via env var)
 
 ### 4. HTTP API (`api.py`)
 
@@ -141,8 +210,9 @@ Content-Type: application/json
 
 Request:
 {
-    "error_log": "string (required)",
-    "source_xml": "string (optional, for context)"
+    "error_log": "string (required) - the build output/error log",
+    "source_xml": "string (optional) - PLCopen XML source for richer suggestions",
+    "deep_analysis": false (optional) - enable web search for difficult cases
 }
 
 Response:
@@ -160,11 +230,14 @@ Response:
             "code_after": "<localVars constant=\"false\">",
             "confidence": 0.95
         }
-    ]
+    ],
+    "used_web_search": false
 }
 ```
 
-**Performance target**: < 3 seconds (mostly LLM latency)
+**Performance targets**:
+- Default (no deep_analysis): < 3 seconds
+- With deep_analysis: < 6 seconds (includes potential web search)
 
 ### 5. Evaluation Framework (`evaluation/`)
 
@@ -188,14 +261,14 @@ Additional synthetic errors (extrapolated):
 #### Metrics
 
 ```python
-@dataclass
-class EvaluationMetrics:
+class EvaluationMetrics(BaseModel):
     severity_accuracy: float      # % correct severity
     stage_accuracy: float         # % correct stage
     complexity_accuracy: float    # % correct complexity
     overall_accuracy: float       # all three correct
     suggestion_quality: float     # manual score 0-1 (optional)
     avg_response_time: float      # seconds
+    web_search_rate: float        # % of requests that used web search
 ```
 
 #### Evaluation Report
@@ -211,11 +284,12 @@ Output markdown/JSON report showing:
 
 ```
 plc-error-classifier/
-├── src/
+├── src/plc_error_classifier/
 │   ├── __init__.py
-│   ├── models.py          # Data classes
+│   ├── models.py          # Pydantic models
 │   ├── parser.py          # Lightweight regex parser
 │   ├── classifier.py      # LLM integration + prompts
+│   ├── web_search.py      # Web search fallback (for deep_analysis)
 │   ├── api.py             # FastAPI app
 │   └── config.py          # Settings, env vars
 ├── evaluation/
@@ -233,7 +307,8 @@ plc-error-classifier/
 │   ├── constant_error.xml
 │   ├── empty_project.txt
 │   └── empty_project.xml
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 ├── README.md
 ├── PLAN.md               # This file
 └── .env.example          # API keys template
@@ -243,34 +318,14 @@ plc-error-classifier/
 
 ## Implementation Order
 
-1. **Models** - Define data structures first
+1. **Models** - Define Pydantic data structures first
 2. **Parser** - Regex extraction, easy to test
 3. **Classifier** - LLM prompt engineering, core logic
 4. **API** - Wrap classifier in FastAPI
 5. **Tests** - Unit tests for parser + integration tests
-6. **Evaluation** - Synthetic generator + metrics
-7. **Documentation** - README, evaluation report
-
----
-
-## Dependencies
-
-```
-# Core
-fastapi>=0.104.0
-uvicorn>=0.24.0
-pydantic>=2.5.0
-
-# LLM
-anthropic>=0.7.0        # or openai>=1.3.0
-
-# Testing
-pytest>=7.4.0
-httpx>=0.25.0           # for async API tests
-
-# Utilities
-python-dotenv>=1.0.0
-```
+6. **Web Search** - Optional fallback for deep_analysis
+7. **Evaluation** - Synthetic generator + metrics
+8. **Documentation** - README, evaluation report
 
 ---
 
@@ -280,6 +335,7 @@ python-dotenv>=1.0.0
 2. **XML context**: How much source XML to include without exceeding token limits?
 3. **Evaluation ground truth**: Manual labeling required for suggestion quality
 4. **Edge cases**: What if error log contains multiple unrelated errors?
+5. **Web search reliability**: Search results may be irrelevant or outdated
 
 ---
 
