@@ -198,7 +198,7 @@ async def classify(request: ClassifyRequest) -> ClassifyResponse:
 5. Output format specification (JSON)
 ```
 
-**LLM Choice**: Anthropic Claude (configurable via env var)
+**LLM Choice**: Google Gemini 2.5 Flash (see [Model Selection](#model-selection) below)
 
 ### 4. HTTP API (`api.py`)
 
@@ -336,6 +336,82 @@ plc-error-classifier/
 3. **Evaluation ground truth**: Manual labeling required for suggestion quality
 4. **Edge cases**: What if error log contains multiple unrelated errors?
 5. **Web search reliability**: Search results may be irrelevant or outdated
+
+---
+
+## Model Selection
+
+### Why Google Gemini?
+
+| Factor | Benefit |
+|--------|---------|
+| **Model range** | Flash-Lite for generation, Flash for classification |
+| **Context window** | 1M tokens - handles large XML files easily |
+| **Cost** | Flash: $0.30/1M input, $2.50/1M output |
+| **Built-in search** | Native Google Search grounding for `deep_analysis` |
+| **Thinking mode** | Built-in reasoning capabilities |
+
+### Validation Results (Dec 2025)
+
+Tested both sample errors with `gemini-2.5-flash` and `gemini-2.5-flash-lite`:
+
+| Model | Error | Severity | Stage | Complexity | Score |
+|-------|-------|----------|-------|------------|-------|
+| **gemini-2.5-flash** | constant_error | ✓ blocking | ✓ iec_compilation | ✓ trivial | 3/3 |
+| **gemini-2.5-flash** | empty_project | ✓ blocking | ✓ code_generation | ✓ moderate | 3/3 |
+| gemini-2.5-flash-lite | constant_error | ✓ blocking | ✓ iec_compilation | ✗ moderate | 2/3 |
+| gemini-2.5-flash-lite | empty_project | ✓ blocking | ✗ xml_validation | ✓ moderate | 2/3 |
+
+**Key findings**:
+- **Flash (6/6 correct)**: Perfect classification, accurate root cause analysis
+- **Flash-Lite (4/6 correct)**: Confused XML warning with actual code_generation error;
+  classified trivial error as moderate
+
+### Model Allocation
+
+| Task | Model | Rationale |
+|------|-------|-----------|
+| **Error classification** | `gemini-2.5-flash` | High accuracy required |
+| **Synthetic data generation** | `gemini-2.5-flash-lite` | Cost-efficient, acceptable for generation |
+| **Deep analysis (with search)** | `gemini-2.5-flash` + grounding | Native Google Search |
+
+### Cost Estimate
+
+| Operation | Model | Est. Tokens | Cost |
+|-----------|-------|-------------|------|
+| Classify 1 error | Flash | ~2K in, ~500 out | ~$0.002 |
+| Generate 30 test cases | Flash-Lite | ~50K in, ~30K out | ~$0.02 |
+| Evaluation run (30 cases) | Flash | ~60K in, ~15K out | ~$0.06 |
+
+### Thinking Budget Control
+
+Gemini 2.5 Flash supports a `thinking_budget` parameter to control reasoning effort and latency:
+
+| Budget Value | Behavior |
+|--------------|----------|
+| `0` | Thinking OFF - lowest latency, similar to 2.0 Flash |
+| `1` - `24576` | Cap on thinking tokens (model uses less if not needed) |
+| `-1` | Model decides automatically based on task complexity |
+
+**Recommended settings for 3s latency target**:
+
+| Use Case | Thinking Budget | Expected Latency |
+|----------|-----------------|------------------|
+| Fast classification | `0` or `512` | < 2s |
+| Standard classification | `1024` | 2-3s |
+| Deep analysis | `4096` or `-1` | 3-6s |
+
+**API usage**:
+
+```python
+from google.genai import types
+
+config = types.GenerateContentConfig(
+    thinking_config=types.ThinkingConfig(
+        thinking_budget=1024  # Balance quality vs latency
+    )
+)
+```
 
 ---
 
