@@ -101,4 +101,3 @@ evaluation/test_cases/*.json
 
 # Task PDF (large file)
 *.pdf
-CLAUDE.md
