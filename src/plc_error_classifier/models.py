@@ -34,10 +34,18 @@ class ErrorClassification(BaseModel):
 
 
 class FixSuggestion(BaseModel):
-    """Fix suggestion with root cause analysis."""
+    """Fix suggestion with root cause analysis and optional code snippets."""
 
     root_cause: str = Field(description="What's actually wrong")
     fix_description: str = Field(description="How to fix the issue")
+    code_before: str | None = Field(
+        default=None,
+        description="Code snippet showing the problematic code (only when source_xml provided)",
+    )
+    code_after: str | None = Field(
+        default=None,
+        description="Code snippet showing the fix (only when source_xml provided)",
+    )
     confidence: float = Field(
         ge=0.0,
         le=1.0,
@@ -49,7 +57,9 @@ class ClassifyResponse(BaseModel):
     """API response model."""
 
     classification: ErrorClassification
-    suggestion: FixSuggestion
+    suggestions: list[FixSuggestion] = Field(
+        description="1-3 actionable fix suggestions, ranked by confidence"
+    )
 
 
 # =============================================================================
@@ -64,4 +74,6 @@ class ClassifierOutput(BaseModel):
     """
 
     classification: ErrorClassification
-    suggestion: FixSuggestion
+    suggestions: list[FixSuggestion] = Field(
+        description="1-3 actionable fix suggestions, ranked by confidence"
+    )

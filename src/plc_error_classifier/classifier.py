@@ -54,14 +54,33 @@ Decision: Match FIRST stage whose patterns appear in the PRIMARY error.
 
 Decision: Default to `moderate` if uncertain.
 
+## Suggestions
+
+Generate 1-3 actionable fix suggestions, ranked by confidence (highest first).
+
+For each suggestion:
+- **root_cause**: Explain what's actually wrong
+- **fix_description**: How to fix the issue
+- **code_before**: The problematic code snippet
+- **code_after**: The corrected code snippet
+- **confidence**: 0.0-1.0 score
+
+**Code Snippet Guidelines**:
+- ALWAYS try to provide code_before/code_after - users need actionable examples
+- **With source_xml**: Extract exact code from the XML (highest confidence: 0.85-0.95)
+- **Without source_xml**: Infer from error log context or show typical patterns (lower confidence: 0.6-0.8)
+- Error logs often contain line numbers and code context - use them
+- When inferring, use realistic variable names from the error message
+- Only set to null if truly impossible to provide any useful example
+
 ## Procedure
 
 1. Scan for `error:` or `Error:` messages (not just warnings)
-2. If multiple errors, focus on the FIRST one
+2. If multiple errors, focus on the FIRST one (root cause)
 3. Match stage detection patterns
 4. Determine severity based on error presence
 5. Assess complexity based on fix scope
-6. Generate root cause and fix suggestion
+6. Generate 1-3 suggestions with root cause analysis
 
 ## Domain Knowledge
 
@@ -71,52 +90,67 @@ Decision: Default to `moderate` if uncertain.
 
 <example>
 <input>
+<error_log>
 [17:05:56]: Cannot build project.
 Warning: /tmp/build/plc.st:30-4..30-12: error: Assignment to CONSTANT variables is not allowed.
 Warning: In section: PROGRAM program0
 Error: IEC to C compiler returned 1
+</error_log>
+<source_xml>
+<localVars constant="true">
+  <variable name="LocalVar1">
+    <type><INT/></type>
+  </variable>
+</localVars>
+</source_xml>
 </input>
 <output>
-{{"classification":{{"severity":"blocking","stage":"iec_compilation","complexity":"trivial"}},"suggestion":{{"root_cause":"Variable declared with constant=true but code assigns to it","fix_description":"Remove constant attribute or remove assignment","confidence":0.95}}}}
+{{"classification":{{"severity":"blocking","stage":"iec_compilation","complexity":"trivial"}},"suggestions":[{{"root_cause":"Variable LocalVar1 declared with constant=true but code assigns to it","fix_description":"Remove constant attribute from variable declaration","code_before":"<localVars constant=\\"true\\">","code_after":"<localVars>","confidence":0.95}},{{"root_cause":"Assignment to constant variable is not allowed in IEC 61131-3","fix_description":"Remove the assignment statement from the code","code_before":"LocalVar1 := 10;","code_after":"(* remove assignment *)","confidence":0.85}}]}}
 </output>
 </example>
 
 <example>
 <input>
+<error_log>
 [18:16:54]: Cannot build project.
 Generating SoftPLC IEC-61131 ST/IL/SFC code...
 stderr: Traceback (most recent call last):
   File "/root/beremiz/PLCGenerator.py", line 959, in ComputeProgram
 AttributeError: 'NoneType' object has no attribute 'upper'
+</error_log>
 </input>
 <output>
-{{"classification":{{"severity":"blocking","stage":"code_generation","complexity":"moderate"}},"suggestion":{{"root_cause":"POU body is empty/None","fix_description":"Add ST code to POU body","confidence":0.90}}}}
+{{"classification":{{"severity":"blocking","stage":"code_generation","complexity":"moderate"}},"suggestions":[{{"root_cause":"POU body is empty or None - no code to compile","fix_description":"Add ST code to the POU body section","code_before":"<body>\\n  <ST>\\n    <!-- empty -->\\n  </ST>\\n</body>","code_after":"<body>\\n  <ST>\\n    <xhtml:p>(* Your ST code here *)</xhtml:p>\\n  </ST>\\n</body>","confidence":0.75}},{{"root_cause":"POU interface may be missing required elements","fix_description":"Verify POU has both interface and body sections defined","code_before":"<pou name=\\"program0\\">\\n  <!-- missing interface/body -->\\n</pou>","code_after":"<pou name=\\"program0\\">\\n  <interface><localVars/></interface>\\n  <body><ST>...</ST></body>\\n</pou>","confidence":0.60}}]}}
 </output>
 </example>
 
 <example>
 <input>
+<error_log>
 [14:22:08]: Building project...
 Warning: PLC XML file doesn't follow XSD schema at line 8:
 Element 'fileHeader': '2024-03-15 10:30:00' is not a valid value of xs:dateTime.
 Compiling IEC Program into C code...
 Compiling C Program to target ...
+</error_log>
 </input>
 <output>
-{{"classification":{{"severity":"warning","stage":"xml_validation","complexity":"trivial"}},"suggestion":{{"root_cause":"DateTime uses space instead of T separator","fix_description":"Change to 2024-03-15T10:30:00","confidence":0.95}}}}
+{{"classification":{{"severity":"warning","stage":"xml_validation","complexity":"trivial"}},"suggestions":[{{"root_cause":"DateTime format uses space instead of ISO 8601 T separator","fix_description":"Change datetime to ISO 8601 format with T separator","code_before":"<fileHeader ... creationDateTime=\\"2024-03-15 10:30:00\\">","code_after":"<fileHeader ... creationDateTime=\\"2024-03-15T10:30:00\\">","confidence":0.90}}]}}
 </output>
 </example>
 
 <example>
 <input>
+<error_log>
 [09:45:13]: Cannot build project.
 stderr: /tmp/build/plc.o: In function `DATALOGGER_body__':
 plc.c:(.text+0x1a4): undefined reference to `__LOG_RECORD'
 collect2: error: ld returned 1 exit status
 Error: C compilation of target failed.
+</error_log>
 </input>
 <output>
-{{"classification":{{"severity":"blocking","stage":"c_compilation","complexity":"complex"}},"suggestion":{{"root_cause":"LOG function not available in runtime","fix_description":"Remove LOG calls or configure runtime with logging support","confidence":0.80}}}}
+{{"classification":{{"severity":"blocking","stage":"c_compilation","complexity":"complex"}},"suggestions":[{{"root_cause":"LOG function references symbol __LOG_RECORD not available in the runtime","fix_description":"Remove LOG function calls from DATALOGGER POU","code_before":"LOG('Recording data: %d', value);","code_after":"(* LOG removed - not supported *)\\n(* Alternative: use output variable *)","confidence":0.70}},{{"root_cause":"Runtime library missing logging support","fix_description":"Configure runtime with logging support enabled or use alternative logging method","code_before":"(* runtime config *)","code_after":"Enable logging in Beremiz runtime configuration or use a custom FB for logging","confidence":0.55}}]}}
 </output>
 </example>
 """
@@ -211,7 +245,7 @@ async def classify(request: ClassifyRequest) -> ClassifyResponse:
 
     return ClassifyResponse(
         classification=result.classification,
-        suggestion=result.suggestion,
+        suggestions=result.suggestions,
     )
 
 
