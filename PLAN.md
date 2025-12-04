@@ -52,47 +52,83 @@ into the system prompt.
 
 ---
 
-## Architecture Decision: Lightweight Parser + LLM
+## Architecture Decision: Direct LLM Classification (No Parser)
 
-### Why Not a Full Parser?
+### Why No Separate Parser?
 
-| Consideration | Decision |
+The task specification mentions an "Error Log Parser", but after careful analysis, we decided
+**not** to implement a separate parsing layer. Here's our reasoning:
+
+| Consideration | Analysis |
 |---------------|----------|
-| LLMs understand unstructured text well | Skip heavy parsing |
-| Error logs are short (<100 lines typically) | Token cost is minimal |
-| Only 2 base error types to handle | Don't over-engineer |
-| 4-5 hour time budget | Keep it simple |
+| **LLM capability** | Modern LLMs (Gemini 2.5 Flash) excel at understanding unstructured text, extracting line numbers, detecting stages, and identifying cascading errors |
+| **Context window** | Gemini has 1M token context; error logs are ~2K tokens max - no truncation needed |
+| **Added complexity** | A parser adds code to maintain with minimal benefit |
+| **Information loss** | Preprocessing might remove useful context the LLM could leverage |
+| **Cascading errors** | LLM can identify root cause vs. downstream effects via prompting |
 
-### Why Keep a Lightweight Parser?
+### What About the Task Requirement?
 
-1. **Satisfies task requirement** - spec explicitly asks for "Error Log Parser"
-2. **Deterministic extraction** - line numbers, stage detection via regex
-3. **Noise reduction** - strip timestamps, temp paths before LLM
-4. **Testability** - can unit test parser independently
-5. **Structure for API response** - clean data model
+The spec asks to "Extract: error type, stage, line numbers, context". Our LLM-based approach
+**still fulfills this requirement** - the extraction happens inside the LLM rather than in
+a separate regex-based module. The output contains all requested fields.
 
-### Hybrid Approach
+### When Would a Parser Be Justified?
+
+We evaluated potential use cases:
+
+| Use Case | Applies to Us? |
+|----------|----------------|
+| Token optimization (truncate long logs) | No - logs are short (~2K tokens vs 1M context) |
+| Stage-based model routing | No - single model handles all stages |
+| Caching/deduplication | Possibly, but can hash raw input directly |
+| Pre-validation | Minor benefit - LLM handles malformed input gracefully |
+
+**Conclusion**: No compelling case for a separate parser in this context.
+
+### Simplified Architecture
 
 ```
-Raw Error Log
-     │
-     ▼
-┌─────────────────┐
-│ Light Parser    │  ← Regex-based, extracts obvious fields
-│ - stage detect  │
-│ - line numbers  │
-│ - clean text    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ LLM Classifier  │  ← Does heavy lifting: classification + suggestions
-│ - severity      │     (optionally with web search for deep analysis)
-│ - complexity    │
-│ - root cause    │
-│ - fix snippets  │
-└─────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        API Request                          │
+│       { error_log: "...", source_xml: "..." (optional) }    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      LLM Classifier                         │
+│                                                             │
+│  • Understands raw error logs directly                      │
+│  • Extracts: stage, line numbers, error type, context       │
+│  • Identifies cascading errors and root cause               │
+│  • Classifies: severity, stage, complexity                  │
+│  • Generates fix suggestions with code snippets             │
+│  • Uses structured output (JSON schema) for consistency     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                       API Response                          │
+│       { classification: {...}, suggestions: [...] }         │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+This design prioritizes simplicity and leverages LLM strengths rather than adding
+unnecessary preprocessing layers.
+
+### Why No Web Search?
+
+We considered adding Google Search grounding for "deep analysis" but decided against it:
+
+| Concern | Analysis |
+|---------|----------|
+| **Complexity** | Adds code path, error handling, timeout logic |
+| **Unpredictability** | Search results vary, may return irrelevant content |
+| **Structured output conflict** | Can't use `response_mime_type` with `google_search` on Gemini 2.5 |
+| **Latency** | Adds 2-3s per request |
+| **Actual value** | IEC 61131-3 errors are predictable; embedded domain knowledge is sufficient |
+
+**Conclusion**: Structured output consistency is more valuable than web search capability.
 
 ---
 
@@ -108,15 +144,6 @@ class ClassifyRequest(BaseModel):
     """API request model."""
     error_log: str                          # Required: build output/error log
     source_xml: str | None = None           # Optional: PLCopen XML for richer suggestions
-    deep_analysis: bool = False             # Optional: enable web search for difficult cases
-
-class ParsedError(BaseModel):
-    """Output from lightweight parser."""
-    raw_text: str
-    cleaned_text: str
-    detected_stage: str | None              # regex guess: xml_validation, code_generation, etc.
-    line_numbers: list[int]                 # extracted line refs
-    has_source_xml: bool                    # whether XML context was provided
 
 class ErrorClassification(BaseModel):
     """Classification result."""
@@ -136,71 +163,61 @@ class ClassifyResponse(BaseModel):
     """API response model."""
     classification: ErrorClassification
     suggestions: list[FixSuggestion]        # 1-3 suggestions
-    used_web_search: bool = False           # Whether deep analysis was triggered
 ```
 
-### 2. Lightweight Parser (`parser.py`)
+### 2. LLM Classifier (`classifier.py`)
 
-Regex-based extraction, no complex grammar:
-
-```python
-def parse_error_log(raw_log: str, source_xml: str | None = None) -> ParsedError:
-    """
-    1. Detect stage from keywords:
-       - "XSD schema" / "XML" → xml_validation
-       - "Generating SoftPLC" / "PLCGenerator" → code_generation
-       - "iec2c" / "IEC to C" → iec_compilation
-       - "gcc" / "undefined reference" → c_compilation
-
-    2. Extract line numbers via regex: r'line\s*(\d+)|:(\d+)-|^(\d{4}):'
-
-    3. Clean text:
-       - Remove temp paths (/tmp/.tmp*/build/)
-       - Normalize whitespace
-       - Optionally truncate very long logs
-    """
-```
-
-### 3. LLM Classifier (`classifier.py`)
-
-**Primary approach**: Embed IEC 61131-3 knowledge in system prompt.
-
-**Fallback**: Web search for edge cases when `deep_analysis=True`.
+**Approach**: Embed comprehensive IEC 61131-3 knowledge in system prompt + use structured output.
 
 **Rationale**:
-- IEC 61131-3 is niche; LLM training data is limited
+- IEC 61131-3 is niche; LLM training data may be limited
 - Beremiz documentation is incomplete and scattered
 - Few-shot examples + domain context in prompt handles common cases
-- Web search provides fallback for unknown error patterns
-
-**Two-Tier Response Strategy**:
+- Structured output (JSON schema) ensures consistent, parseable responses
 
 ```python
 async def classify(request: ClassifyRequest) -> ClassifyResponse:
-    # Fast path: embedded knowledge only
-    result = await classify_with_embedded_knowledge(request)
-
-    # If deep_analysis enabled and confidence is low, try web search
-    if request.deep_analysis and result.suggestions[0].confidence < 0.7:
-        result = await classify_with_web_search(request, result)
-        result.used_web_search = True
-
-    return result
+    response = await client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=build_prompt(request.error_log, request.source_xml),
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=ClassifyResponse,
+        ),
+    )
+    return ClassifyResponse.model_validate_json(response.text)
 ```
 
-**System Prompt Structure**:
+**Required Domain Knowledge** (embedded in system prompt):
 
 ```
-1. Role: IEC 61131-3 / Beremiz expert
-2. Quick reference: ST syntax, PLCopen XML structure
-3. Common error patterns with typical fixes
-4. Build pipeline stage descriptions
-5. Output format specification (JSON)
+1. Build Pipeline Stages
+   - xml_validation: PLCopen XML schema errors
+   - code_generation: Beremiz PLCGenerator Python errors
+   - iec_compilation: matiec/iec2c compiler errors
+   - c_compilation: gcc/linker errors
+
+2. IEC 61131-3 Fundamentals
+   - Data types: BOOL, INT, DINT, REAL, STRING, TIME, DATE, etc.
+   - POU types: PROGRAM, FUNCTION, FUNCTION_BLOCK
+   - Variable sections: VAR, VAR_INPUT, VAR_OUTPUT, VAR_IN_OUT, VAR_EXTERNAL
+   - Languages: ST (Structured Text), FBD, LD, SFC
+
+3. Common Error Patterns
+   - Type mismatches, undeclared variables
+   - Constant assignment violations
+   - Missing body/interface, invalid XML structure
+   - Control flow errors (IF/FOR/WHILE with non-BOOL)
+
+4. PLCopen XML Structure
+   - Hierarchy: project → types → pous → pou → interface/body
+   - ST code embedding: <ST><xhtml>...</xhtml></ST>
 ```
 
 **LLM Choice**: Google Gemini 2.5 Flash (see [Model Selection](#model-selection) below)
 
-### 4. HTTP API (`api.py`)
+### 3. HTTP API (`api.py`)
 
 FastAPI with single endpoint:
 
@@ -211,8 +228,7 @@ Content-Type: application/json
 Request:
 {
     "error_log": "string (required) - the build output/error log",
-    "source_xml": "string (optional) - PLCopen XML source for richer suggestions",
-    "deep_analysis": false (optional) - enable web search for difficult cases
+    "source_xml": "string (optional) - PLCopen XML source for richer suggestions"
 }
 
 Response:
@@ -230,16 +246,13 @@ Response:
             "code_after": "<localVars constant=\"false\">",
             "confidence": 0.95
         }
-    ],
-    "used_web_search": false
+    ]
 }
 ```
 
-**Performance targets**:
-- Default (no deep_analysis): < 3 seconds
-- With deep_analysis: < 6 seconds (includes potential web search)
+**Performance target**: < 3 seconds per request
 
-### 5. Evaluation Framework (`evaluation/`)
+### 4. Evaluation Framework (`evaluation/`)
 
 #### Synthetic Error Generator
 
@@ -266,9 +279,8 @@ class EvaluationMetrics(BaseModel):
     stage_accuracy: float         # % correct stage
     complexity_accuracy: float    # % correct complexity
     overall_accuracy: float       # all three correct
-    suggestion_quality: float     # manual score 0-1 (optional)
+    suggestion_quality: float     # LLM-as-judge score 0-1
     avg_response_time: float      # seconds
-    web_search_rate: float        # % of requests that used web search
 ```
 
 #### Evaluation Report
@@ -287,9 +299,7 @@ plc-error-classifier/
 ├── src/plc_error_classifier/
 │   ├── __init__.py
 │   ├── models.py          # Pydantic models
-│   ├── parser.py          # Lightweight regex parser
 │   ├── classifier.py      # LLM integration + prompts
-│   ├── web_search.py      # Web search fallback (for deep_analysis)
 │   ├── api.py             # FastAPI app
 │   └── config.py          # Settings, env vars
 ├── evaluation/
@@ -299,7 +309,6 @@ plc-error-classifier/
 │   ├── run_eval.py        # Evaluation runner
 │   └── test_cases/        # Generated test data
 ├── tests/
-│   ├── test_parser.py
 │   ├── test_classifier.py
 │   └── test_api.py
 ├── sample_data/           # Original sample files
@@ -319,23 +328,20 @@ plc-error-classifier/
 ## Implementation Order
 
 1. **Models** - Define Pydantic data structures first
-2. **Parser** - Regex extraction, easy to test
-3. **Classifier** - LLM prompt engineering, core logic
-4. **API** - Wrap classifier in FastAPI
-5. **Tests** - Unit tests for parser + integration tests
-6. **Web Search** - Optional fallback for deep_analysis
-7. **Evaluation** - Synthetic generator + metrics
-8. **Documentation** - README, evaluation report
+2. **Classifier** - LLM prompt engineering, core logic
+3. **API** - Wrap classifier in FastAPI
+4. **Tests** - Integration tests for classifier and API
+5. **Evaluation** - Synthetic generator + metrics
+6. **Documentation** - README, evaluation report
 
 ---
 
 ## Open Questions / Risks
 
 1. **LLM latency**: May need caching for repeated similar errors
-2. **XML context**: How much source XML to include without exceeding token limits?
-3. **Evaluation ground truth**: Manual labeling required for suggestion quality
-4. **Edge cases**: What if error log contains multiple unrelated errors?
-5. **Web search reliability**: Search results may be irrelevant or outdated
+2. **Evaluation ground truth**: LLM-as-judge for suggestion quality (potential bias)
+3. **Edge cases**: What if error log contains multiple unrelated errors?
+4. **Domain coverage**: System prompt may not cover all obscure IEC 61131-3 edge cases
 
 ---
 
@@ -348,7 +354,7 @@ plc-error-classifier/
 | **Model range** | Flash-Lite for generation, Flash for classification |
 | **Context window** | 1M tokens - handles large XML files easily |
 | **Cost** | Flash: $0.30/1M input, $2.50/1M output |
-| **Built-in search** | Native Google Search grounding for `deep_analysis` |
+| **Structured output** | Native JSON schema support for consistent responses |
 | **Thinking mode** | Built-in reasoning capabilities |
 
 ### Validation Results (Dec 2025)
@@ -372,16 +378,16 @@ Tested both sample errors with `gemini-2.5-flash` and `gemini-2.5-flash-lite`:
 | Task | Model | Rationale |
 |------|-------|-----------|
 | **Error classification** | `gemini-2.5-flash` | High accuracy required |
-| **Synthetic data generation** | `gemini-2.5-flash-lite` | Cost-efficient, acceptable for generation |
-| **Deep analysis (with search)** | `gemini-2.5-flash` + grounding | Native Google Search |
+| **Synthetic data generation** | `gemini-2.5-flash` | Better quality test cases |
+| **LLM-as-judge** | `gemini-2.5-flash` | Consistent evaluation |
 
 ### Cost Estimate
 
 | Operation | Model | Est. Tokens | Cost |
 |-----------|-------|-------------|------|
 | Classify 1 error | Flash | ~2K in, ~500 out | ~$0.002 |
-| Generate 30 test cases | Flash-Lite | ~50K in, ~30K out | ~$0.02 |
-| Evaluation run (30 cases) | Flash | ~60K in, ~15K out | ~$0.06 |
+| Generate 21 test cases | Flash | ~50K in, ~30K out | ~$0.10 |
+| Evaluation run (21 cases) | Flash | ~60K in, ~15K out | ~$0.06 |
 
 ### Thinking Budget Control
 
@@ -389,24 +395,18 @@ Gemini 2.5 Flash supports a `thinking_budget` parameter to control reasoning eff
 
 | Budget Value | Behavior |
 |--------------|----------|
-| `0` | Thinking OFF - lowest latency, similar to 2.0 Flash |
-| `1` - `24576` | Cap on thinking tokens (model uses less if not needed) |
-| `-1` | Model decides automatically based on task complexity |
+| `0` | Thinking OFF - lowest latency |
+| `1` - `24576` | Cap on thinking tokens |
+| `-1` | Model decides automatically |
 
-**Recommended settings for 3s latency target**:
-
-| Use Case | Thinking Budget | Expected Latency |
-|----------|-----------------|------------------|
-| Fast classification | `0` or `512` | < 2s |
-| Standard classification | `1024` | 2-3s |
-| Deep analysis | `4096` or `-1` | 3-6s |
-
-**API usage**:
+**Recommended setting for 3s latency target**: `thinking_budget=1024`
 
 ```python
 from google.genai import types
 
 config = types.GenerateContentConfig(
+    response_mime_type="application/json",
+    response_schema=ClassifyResponse,
     thinking_config=types.ThinkingConfig(
         thinking_budget=1024  # Balance quality vs latency
     )
@@ -432,8 +432,8 @@ Analyze the error and respond in JSON:
 
 USER:
 Error Log:
-{cleaned_error_log}
+{error_log}
 
 Source XML (if available):
-{source_xml_snippet}
+{source_xml}
 ```
