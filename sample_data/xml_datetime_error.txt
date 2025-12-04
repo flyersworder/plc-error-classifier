@@ -1,0 +1,18 @@
+[14:22:08]: Building project...
+[14:22:09]: Cannot build project.
+[14:22:09]: Cannot build project.
+stdout: Warning: PLC XML file doesn't follow XSD schema at line 8:
+Element '{http://www.plcopen.org/xml/tc6_0201}fileHeader': '2024-03-15 10:30:00' is not a valid value of the atomic type 'xs:dateTime'.
+Warning: PLC XML file doesn't follow XSD schema at line 12:
+Element '{http://www.plcopen.org/xml/tc6_0201}contentHeader': '2024-03-15 14:22:00' is not a valid value of the atomic type 'xs:dateTime'.
+Start build in /tmp/.tmpABC123/build
+Generating SoftPLC IEC-61131 ST/IL/SFC code...
+Collecting data types
+Collecting POUs
+Generate POU MotorControl
+Generate Config(s)
+Compiling IEC Program into C code...
+0.000s 0.095s 0.190s 0.285s
+"/root/beremiz/matiec/iec2c" -f -l -p -I "/root/beremiz/matiec/lib" -T "/tmp/.tmpABC123/build" "/tmp/.tmpABC123/build/plc.st"
+0.320s
+Compiling C Program to target ...

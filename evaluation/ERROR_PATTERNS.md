@@ -489,10 +489,31 @@ complex:
 
 ---
 
-## Next Steps
+## Implementation Status
 
-1. [ ] Create synthesizer prompt with error patterns
-2. [ ] Generate 20-30 test cases using small LLM
-3. [ ] Manual review of generated cases for quality
-4. [ ] Store test cases in evaluation/test_cases/
-5. [ ] Implement evaluation runner and metrics
+### Completed
+
+1. [x] Create synthesizer prompt with error patterns → `evaluation/generator.py`
+2. [x] Define 21 error patterns covering all 4 stages
+3. [x] Implement LLM-as-judge for suggestion quality → `evaluation/judge.py`
+4. [x] Implement evaluation runner and metrics → `evaluation/run_eval.py`, `evaluation/metrics.py`
+5. [x] Define complexity heuristics → `evaluation/models.py`
+
+### Remaining
+
+1. [ ] Generate 20-30 test cases using `SyntheticTestGenerator`
+2. [ ] Manual review of generated cases for quality
+3. [ ] Run full evaluation and generate report
+
+### Usage
+
+```bash
+# Generate test cases
+uv run python -m evaluation.generator
+
+# Run evaluation
+uv run python -m evaluation.run_eval
+
+# Or programmatically
+from evaluation import SyntheticTestGenerator, EvaluationRunner
+```

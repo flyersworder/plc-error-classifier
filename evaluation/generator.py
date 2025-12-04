@@ -1,0 +1,764 @@
+"""Synthetic test case generator for PLC error classifier evaluation."""
+
+import asyncio
+import os
+import uuid
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from json_repair import repair_json
+from pydantic import BaseModel, Field
+
+from .models import (
+    ExpectedClassification,
+    ExpectedFix,
+    TestCase,
+    TestSuite,
+)
+
+# Load environment variables
+load_dotenv()
+
+# Rate limiting: max concurrent API requests to avoid hitting limits
+MAX_CONCURRENT_REQUESTS = 5
+
+# ============================================================================
+# Generated Test Case Schema
+# ============================================================================
+
+
+class GeneratedTestCase(BaseModel):
+    """Schema for LLM-generated test case output.
+
+    Reuses ExpectedFix fields for consistency with ground truth format.
+    """
+
+    error_log: str = Field(description="The realistic error log for this pattern")
+    root_cause: str = Field(description="What is actually wrong")
+    fix_description: str = Field(description="How to fix the error")
+    fix_location: str | None = Field(
+        default=None, description="Where in the code the fix should be applied"
+    )
+    source_xml: str | None = Field(
+        default=None, description="Optional PLCopen XML source that would trigger this error"
+    )
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+# Use Flash-Lite for generation (cost-efficient)
+GENERATOR_MODEL = "gemini-2.5-flash-lite"
+
+# Path to sample data for few-shot examples
+SAMPLE_DATA_DIR = Path(__file__).parent.parent / "sample_data"
+
+# Output directory for generated test cases
+TEST_CASES_DIR = Path(__file__).parent / "test_cases"
+
+
+# ============================================================================
+# Error Pattern Definitions
+# ============================================================================
+
+
+class ErrorPattern(BaseModel):
+    """Definition of an error pattern to generate test cases from.
+
+    Attributes:
+        id: Unique identifier for the pattern.
+        name: Human-readable name.
+        stage: Build pipeline stage where error occurs.
+        severity: Impact on build process.
+            - "blocking": Build fails completely, cannot proceed.
+            - "warning": Build continues despite the issue.
+            - "info": Informational message, no impact.
+        complexity: User's cognitive load to resolve the error.
+            This measures how much effort a programmer needs to go from
+            seeing the error to fixing it. It combines message clarity
+            and domain knowledge required.
+            - "trivial": Error message clearly states the problem AND the fix
+              is immediately obvious. User reads error → knows what to do.
+              Example: "Variable 'X' not declared" → add declaration.
+            - "moderate": Error message indicates the problem but user needs
+              to think, check documentation, or understand context to fix.
+              Example: "undefined reference to 'X'" → need to find missing library.
+            - "complex": Error message is cryptic, misleading, or requires
+              significant investigation/debugging to understand root cause.
+              Example: Python traceback with no clear PLC-related message.
+        error_message: The core error message pattern to match.
+        category: Error category for grouping similar errors.
+        description: What triggers this error.
+    """
+
+    id: str
+    name: str
+    stage: Literal["xml_validation", "code_generation", "iec_compilation", "c_compilation"]
+    severity: Literal["blocking", "warning", "info"]
+    complexity: Literal["trivial", "moderate", "complex"]
+    error_message: str  # The core error message pattern
+    category: str  # Error category for grouping
+    description: str  # What triggers this error
+
+
+# Define error patterns to generate test cases from
+ERROR_PATTERNS: list[ErrorPattern] = [
+    # =========================================================================
+    # XML Validation Errors (3-5 cases)
+    # =========================================================================
+    ErrorPattern(
+        id="xml_001",
+        name="datetime_format_error",
+        stage="xml_validation",
+        severity="warning",
+        complexity="trivial",
+        error_message="'{value}' is not a valid value of the atomic type 'xs:dateTime'",
+        category="datetime_format",
+        description="DateTime attribute uses space instead of 'T' separator",
+    ),
+    ErrorPattern(
+        id="xml_002",
+        name="missing_child_element",
+        stage="xml_validation",
+        severity="warning",
+        complexity="moderate",
+        error_message="Missing child element(s). Expected is one of",
+        category="missing_child_element",
+        description="Required child element is missing from parent",
+    ),
+    ErrorPattern(
+        id="xml_003",
+        name="invalid_attribute_value",
+        stage="xml_validation",
+        severity="warning",
+        complexity="trivial",
+        error_message="'{value}' is not a valid value for attribute '{name}'",
+        category="invalid_attribute",
+        description="Attribute has invalid value for its type",
+    ),
+    # =========================================================================
+    # Code Generation Errors (3-5 cases)
+    # =========================================================================
+    ErrorPattern(
+        id="codegen_001",
+        name="empty_body_nonetype",
+        stage="code_generation",
+        severity="blocking",
+        complexity="complex",  # Python traceback only, no clear PLC error message
+        error_message="AttributeError: 'NoneType' object has no attribute 'upper'",
+        category="nonetype_attribute",
+        description="Body element EXISTS but is EMPTY (no ST/FBD/LD content inside). "
+        "This causes a Python traceback with NoneType error. "
+        "The error log must show a Python traceback ending with AttributeError.",
+    ),
+    ErrorPattern(
+        id="codegen_002",
+        name="no_body_defined",
+        stage="code_generation",
+        severity="blocking",
+        complexity="trivial",  # Clear message: "No body defined in X POU" → add body element
+        error_message='No body defined in "{pou_name}" POU',
+        category="no_body_defined",
+        description="Body element is COMPLETELY MISSING from the POU XML (not just empty). "
+        "Beremiz detects this early and shows a clear error message. "
+        "The error log must contain: 'Error: No body defined in \"X\" POU' (not a Python traceback).",
+    ),
+    ErrorPattern(
+        id="codegen_003",
+        name="undefined_block_type",
+        stage="code_generation",
+        severity="blocking",
+        complexity="trivial",  # Clear message: "Undefined block type X" → define or import the FB
+        error_message='Undefined block type "{block_name}" in "{pou_name}" POU',
+        category="undefined_block_type",
+        description="Reference to unknown function block in FBD/LD",
+    ),
+    ErrorPattern(
+        id="codegen_004",
+        name="sfc_transition_not_connected",
+        stage="code_generation",
+        severity="blocking",
+        complexity="complex",
+        error_message='SFC transition in POU "{pou_name}" must be connected',
+        category="sfc_transition_error",
+        description="SFC transition element not properly connected",
+    ),
+    # =========================================================================
+    # IEC Compilation Errors (12-18 cases)
+    # =========================================================================
+    ErrorPattern(
+        id="iec_001",
+        name="constant_assignment",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Assignment to CONSTANT variables is not allowed",
+        category="constant_assignment",
+        description="Attempting to assign value to a constant variable",
+    ),
+    ErrorPattern(
+        id="iec_002",
+        name="undeclared_variable",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Variable not declared in this scope",
+        category="undeclared_variable",
+        description="Using a variable that hasn't been declared",
+    ),
+    ErrorPattern(
+        id="iec_003",
+        name="type_mismatch_assignment",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",  # Clear message: "Expected INT, got STRING" → fix the type
+        error_message="Incompatible data types for ':=' operation",
+        category="type_mismatch_simple",
+        description="Assignment between incompatible types",
+    ),
+    ErrorPattern(
+        id="iec_004",
+        name="invalid_for_control_var",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Invalid data type for 'FOR' control variable",
+        category="invalid_for_loop",
+        description="FOR loop control variable is not an integer type",
+    ),
+    ErrorPattern(
+        id="iec_005",
+        name="invalid_if_condition",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Invalid data type for 'IF' condition (should be BOOL)",
+        category="invalid_condition_type",
+        description="IF condition expression is not BOOL type",
+    ),
+    ErrorPattern(
+        id="iec_006",
+        name="integer_overflow",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Numerical value exceeds range for ANY_INT data type",
+        category="type_mismatch_simple",
+        description="Integer literal too large for target type",
+    ),
+    ErrorPattern(
+        id="iec_007",
+        name="invalid_time_syntax",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Invalid syntax for TIME data type",
+        category="type_mismatch_simple",
+        description="Malformed TIME literal",
+    ),
+    ErrorPattern(
+        id="iec_008",
+        name="duplicate_parameter",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",  # Clear message: "Duplicate parameter X" → remove the duplicate
+        error_message="Duplicate parameter '{param}' when invoking",
+        category="function_parameter_error",
+        description="Same parameter specified twice in function call",
+    ),
+    ErrorPattern(
+        id="iec_009",
+        name="invalid_array_subscript",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="moderate",
+        error_message="Invalid data type for array subscript field",
+        category="array_subscript_error",
+        description="Non-integer used as array index",
+    ),
+    ErrorPattern(
+        id="iec_010",
+        name="struct_field_not_found",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="moderate",
+        error_message="Undeclared structured (or FB) variable, or non-existant field",
+        category="undeclared_variable",
+        description="Accessing non-existent field on struct or FB",
+    ),
+    ErrorPattern(
+        id="iec_011",
+        name="invalid_while_condition",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="Invalid data type for 'WHILE' condition",
+        category="invalid_condition_type",
+        description="WHILE condition is not BOOL type",
+    ),
+    ErrorPattern(
+        id="iec_012",
+        name="case_not_integer",
+        stage="iec_compilation",
+        severity="blocking",
+        complexity="trivial",
+        error_message="'CASE' quantity not an integer or enumerated",
+        category="invalid_condition_type",
+        description="CASE expression is not integer or enum",
+    ),
+    # =========================================================================
+    # C Compilation Errors (2-4 cases)
+    # =========================================================================
+    ErrorPattern(
+        id="c_001",
+        name="undefined_reference",
+        stage="c_compilation",
+        severity="blocking",
+        complexity="moderate",
+        error_message="undefined reference to '{symbol}'",
+        category="undefined_reference",
+        description="Linker cannot find symbol definition",
+    ),
+    ErrorPattern(
+        id="c_002",
+        name="missing_header",
+        stage="c_compilation",
+        severity="blocking",
+        complexity="moderate",
+        error_message="fatal error: {header}: No such file or directory",
+        category="missing_header",
+        description="Required header file not found",
+    ),
+]
+
+
+# ============================================================================
+# XML Validation
+# ============================================================================
+
+
+def validate_xml(xml_string: str) -> tuple[bool, str | None]:
+    """Validate that an XML string is well-formed.
+
+    Args:
+        xml_string: The XML content to validate.
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is None.
+    """
+    if not xml_string or not xml_string.strip():
+        return True, None  # Empty XML is acceptable
+
+    try:
+        ET.fromstring(xml_string)
+        return True, None
+    except ET.ParseError as e:
+        return False, str(e)
+
+
+# ============================================================================
+# Few-Shot Examples
+# ============================================================================
+
+
+def load_sample_data() -> dict[str, dict[str, str]]:
+    """Load sample error logs and XML files.
+
+    Samples cover all 4 build stages:
+    - xml_datetime_error: xml_validation stage
+    - empty_project: code_generation stage
+    - constant_error: iec_compilation stage
+    - c_linker_error: c_compilation stage
+    """
+    samples = {}
+
+    sample_names = [
+        "xml_datetime_error",  # xml_validation
+        "empty_project",  # code_generation
+        "constant_error",  # iec_compilation
+        "c_linker_error",  # c_compilation
+    ]
+
+    for name in sample_names:
+        txt_path = SAMPLE_DATA_DIR / f"{name}.txt"
+        xml_path = SAMPLE_DATA_DIR / f"{name}.xml"
+
+        samples[name] = {
+            "error_log": txt_path.read_text() if txt_path.exists() else "",
+            "source_xml": xml_path.read_text() if xml_path.exists() else "",
+        }
+
+    return samples
+
+
+# ============================================================================
+# Generator Prompt
+# ============================================================================
+
+SYSTEM_PROMPT = """<role>
+You are an IEC 61131-3 PLC expert generating test cases for a Beremiz error classifier.
+</role>
+
+<critical_rules>
+IMPORTANT - Read these first:
+1. The error_message pattern provided MUST appear exactly in your error_log
+2. source_xml MUST be syntactically valid XML (parseable, matching tags, escaped special chars)
+3. XML errors should be SEMANTIC (wrong values), not SYNTACTIC (malformed tags)
+4. source_xml is REQUIRED for xml_validation and code_generation stages
+</critical_rules>
+
+<context>
+Beremiz build pipeline stages:
+- xml_validation: PLCopen XML schema validation (Warning: PLC XML file doesn't follow XSD schema)
+- code_generation: Python PLCGenerator errors (Traceback or "Error: No body defined")
+- iec_compilation: matiec/iec2c errors (plc.st:line-col: error: message)
+- c_compilation: gcc/linker errors (undefined reference, No such file)
+</context>
+
+<output_format>
+JSON with: error_log, source_xml, root_cause, fix_description, fix_location
+</output_format>
+
+<error_log_format>
+[HH:MM:SS]: Building project...
+[HH:MM:SS]: Cannot build project.
+stdout: Start build in /tmp/.tmpXXX/build
+Generating SoftPLC IEC-61131 ST/IL/SFC code...
+[stage-specific output]
+stderr: [error messages]
+Error: [final error]
+</error_log_format>
+
+<variety>
+Use different variable names, data types (INT, REAL, STRING, BOOL, TIME), POU names, and line numbers.
+</variety>
+"""
+
+USER_PROMPT_TEMPLATE = """<pattern>
+ID: {pattern_id}
+Name: {pattern_name}
+Stage: {stage}
+Severity: {severity}
+Error Message: {error_message}
+Description: {description}
+</pattern>
+
+<examples>
+<example stage="xml_validation">
+<error_log>
+{xml_datetime_error_log}
+</error_log>
+<source_xml>
+{xml_datetime_error_xml}
+</source_xml>
+</example>
+
+<example stage="code_generation">
+<error_log>
+{empty_project_log}
+</error_log>
+<source_xml>
+{empty_project_xml}
+</source_xml>
+</example>
+
+<example stage="iec_compilation">
+<error_log>
+{constant_error_log}
+</error_log>
+<source_xml>
+{constant_error_xml}
+</source_xml>
+</example>
+
+<example stage="c_compilation">
+<error_log>
+{c_linker_error_log}
+</error_log>
+<source_xml>
+{c_linker_error_xml}
+</source_xml>
+</example>
+</examples>
+
+<task>
+Generate a test case for the "{pattern_name}" pattern.
+- Stage must be: {stage}
+- Error log MUST contain: {error_message}
+- Use different names/values than the examples
+- source_xml must be valid, parseable XML
+</task>"""
+
+
+# ============================================================================
+# Generator Class
+# ============================================================================
+
+
+class SyntheticTestGenerator:
+    """Generates synthetic test cases using Gemini.
+
+    Uses async API with concurrent requests for better performance.
+    Rate-limited to MAX_CONCURRENT_REQUESTS to avoid API limits.
+    """
+
+    def __init__(self, api_key: str | None = None):
+        """Initialize the generator."""
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY environment variable not set")
+
+        self.client = genai.Client(api_key=self.api_key)
+        self.samples = load_sample_data()
+        self._semaphore: asyncio.Semaphore | None = None
+
+    async def generate_test_case(
+        self,
+        aclient: genai.Client,
+        pattern: ErrorPattern,
+        use_search: bool = False,
+        max_retries: int = 3,
+    ) -> TestCase:
+        """Generate a single test case for an error pattern.
+
+        Args:
+            aclient: Async Gemini client (from client.aio context manager).
+            pattern: The error pattern to generate a test case for.
+            use_search: If True, enables Google Search grounding for better accuracy.
+            max_retries: Maximum retries if XML validation fails.
+
+        Returns:
+            A TestCase with generated error log and ground truth labels.
+        """
+        # Rate limiting
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+        last_xml_error: str | None = None
+
+        for attempt in range(max_retries):
+            async with self._semaphore:
+                # Build prompt with all 4 stage examples
+                # Add XML error feedback if retrying
+                retry_hint = ""
+                if last_xml_error:
+                    retry_hint = f"""
+
+**IMPORTANT: Your previous XML was malformed!**
+Error: {last_xml_error}
+
+Please ensure the source_xml is syntactically valid XML. The errors should be SEMANTIC (wrong values, missing elements for the build stage), not SYNTACTIC (broken tags, unescaped characters).
+"""
+
+                user_prompt = (
+                    USER_PROMPT_TEMPLATE.format(
+                        pattern_id=pattern.id,
+                        pattern_name=pattern.name,
+                        stage=pattern.stage,
+                        severity=pattern.severity,
+                        complexity=pattern.complexity,
+                        error_message=pattern.error_message,
+                        description=pattern.description,
+                        # Error logs
+                        xml_datetime_error_log=self.samples["xml_datetime_error"]["error_log"],
+                        empty_project_log=self.samples["empty_project"]["error_log"],
+                        constant_error_log=self.samples["constant_error"]["error_log"],
+                        c_linker_error_log=self.samples["c_linker_error"]["error_log"],
+                        # XML sources - crucial for teaching correct XML structure
+                        xml_datetime_error_xml=self.samples["xml_datetime_error"]["source_xml"],
+                        empty_project_xml=self.samples["empty_project"]["source_xml"],
+                        constant_error_xml=self.samples["constant_error"]["source_xml"],
+                        c_linker_error_xml=self.samples["c_linker_error"]["source_xml"],
+                    )
+                    + retry_hint
+                )
+
+                # Configure generation
+                # Per GEMINI_PROMPTING.md:
+                # - Use temperature=1.0 when using Google Search (recommended for grounded responses)
+                # - Use temperature=0.7-1.0 for generation/creative tasks
+                #
+                # IMPORTANT: google_search tool cannot be combined with response_mime_type
+                # on gemini-2.5 models (only works on gemini-3-pro-preview).
+                # When using search, we request JSON in the prompt and parse manually.
+                if use_search:
+                    config = types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        temperature=1.0,  # Recommended for grounded responses
+                        # NOTE: Cannot use response_mime_type with google_search on 2.5 models
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                    )
+                else:
+                    config = types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        temperature=0.8,  # Some creativity for variety
+                        response_mime_type="application/json",
+                        response_json_schema=GeneratedTestCase.model_json_schema(),
+                        # Enable thinking for better quality test generation
+                        # Flash-Lite has thinking OFF by default
+                        thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                    )
+
+                # Generate using async API
+                response = await aclient.models.generate_content(
+                    model=GENERATOR_MODEL,
+                    contents=user_prompt,
+                    config=config,
+                )
+
+                # Parse response using json_repair
+                # Handles markdown code blocks and malformed JSON from LLM output
+                try:
+                    result = repair_json(response.text, return_objects=True)
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to parse generator response: {e}\nResponse: {response.text}"
+                    ) from e
+
+                # Validate XML if present
+                source_xml = result.get("source_xml")
+                if source_xml:
+                    is_valid, xml_error = validate_xml(source_xml)
+                    if not is_valid:
+                        last_xml_error = xml_error
+                        if attempt < max_retries - 1:
+                            print(
+                                f"  XML validation failed for {pattern.name} "
+                                f"(attempt {attempt + 1}/{max_retries}): {xml_error}"
+                            )
+                            continue  # Retry
+                        else:
+                            print(
+                                f"  WARNING: XML still invalid after {max_retries} attempts "
+                                f"for {pattern.name}"
+                            )
+                            # Continue with invalid XML - we'll report it in quality check
+
+                # Build test case
+                return TestCase(
+                    id=f"test_{pattern.id}_{uuid.uuid4().hex[:8]}",
+                    name=pattern.name,
+                    description=f"Generated test case for {pattern.name}: {pattern.description}",
+                    error_log=result["error_log"],
+                    source_xml=source_xml,
+                    expected_classification=ExpectedClassification(
+                        severity=pattern.severity,
+                        stage=pattern.stage,
+                        complexity=pattern.complexity,
+                    ),
+                    expected_fix=ExpectedFix(
+                        root_cause=result["root_cause"],
+                        fix_description=result["fix_description"],
+                        fix_location=result.get("fix_location"),
+                    ),
+                    error_category=pattern.category,
+                    base_pattern=pattern.error_message,
+                )
+
+        # Should not reach here, but just in case
+        raise ValueError(f"Failed to generate valid test case for {pattern.name}")
+
+    async def generate_test_suite(
+        self,
+        patterns: list[ErrorPattern] | None = None,
+        use_search_for_complex: bool = True,
+    ) -> TestSuite:
+        """Generate a complete test suite with concurrent requests.
+
+        Args:
+            patterns: List of error patterns to generate. Defaults to all ERROR_PATTERNS.
+            use_search_for_complex: If True, uses Google Search for complex patterns.
+
+        Returns:
+            A TestSuite containing all generated test cases.
+        """
+        patterns = patterns or ERROR_PATTERNS
+
+        # Use async context manager for proper resource cleanup
+        async with self.client.aio as aclient:
+            # Create tasks for all patterns
+            tasks = []
+            for pattern in patterns:
+                use_search = use_search_for_complex and pattern.complexity == "complex"
+                task = self._generate_with_logging(aclient, pattern, use_search)
+                tasks.append(task)
+
+            # Run concurrently (rate-limited by semaphore)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect successful results
+        test_cases: list[TestCase] = []
+        for pattern, result in zip(patterns, results, strict=False):
+            if isinstance(result, Exception):
+                print(f"Failed to generate {pattern.name}: {result}")
+            else:
+                test_cases.append(result)
+
+        return TestSuite(
+            name="PLC Error Classifier Evaluation Suite",
+            description="Synthetic test cases covering all 4 build stages",
+            test_cases=test_cases,
+            version="1.0.0",
+        )
+
+    async def _generate_with_logging(
+        self,
+        aclient: genai.Client,
+        pattern: ErrorPattern,
+        use_search: bool,
+    ) -> TestCase:
+        """Generate test case with progress logging."""
+        test_case = await self.generate_test_case(aclient, pattern, use_search)
+        print(f"Generated: {test_case.id} ({pattern.name})")
+        return test_case
+
+    def save_test_suite(self, suite: TestSuite, filename: str = "test_suite.json") -> Path:
+        """Save test suite to file."""
+        TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = TEST_CASES_DIR / filename
+
+        with open(output_path, "w") as f:
+            f.write(suite.model_dump_json(indent=2))
+
+        return output_path
+
+
+# ============================================================================
+# CLI Entry Point
+# ============================================================================
+
+
+async def main() -> None:
+    """Generate test suite and save to file."""
+    print(f"Generating test suite with {len(ERROR_PATTERNS)} patterns...")
+    print(f"Timestamp: {datetime.now().isoformat()}")
+    print(f"Max concurrent requests: {MAX_CONCURRENT_REQUESTS}")
+    print()
+
+    generator = SyntheticTestGenerator()
+    # Disable search, rely on few-shot examples and thinking
+    suite = await generator.generate_test_suite(use_search_for_complex=False)
+
+    output_path = generator.save_test_suite(suite)
+    print(f"\nSaved test suite to: {output_path}")
+    print(f"Total test cases: {len(suite.test_cases)}")
+
+    # Print summary by stage
+    by_stage: dict[str, int] = {}
+    for tc in suite.test_cases:
+        stage = tc.expected_classification.stage
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+
+    print("\nBreakdown by stage:")
+    for stage, count in sorted(by_stage.items()):
+        print(f"  {stage}: {count}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

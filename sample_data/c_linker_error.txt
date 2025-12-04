@@ -1,0 +1,26 @@
+[09:45:12]: Building project...
+[09:45:13]: Cannot build project.
+[09:45:13]: Cannot build project.
+stdout: Start build in /tmp/.tmpDEF456/build
+Generating SoftPLC IEC-61131 ST/IL/SFC code...
+Collecting data types
+Collecting POUs
+Generate POU DataLogger
+Generate Config(s)
+Compiling IEC Program into C code...
+0.000s 0.102s 0.204s 0.306s
+"/root/beremiz/matiec/iec2c" -f -l -p -I "/root/beremiz/matiec/lib" -T "/tmp/.tmpDEF456/build" "/tmp/.tmpDEF456/build/plc.st"
+0.345s
+Compiling C Program to target ...
+
+stderr: arm-linux-gnueabihf-gcc -I"/root/beremiz/matiec/lib/C" -c "/tmp/.tmpDEF456/build/plc.c" -o "/tmp/.tmpDEF456/build/plc.o"
+arm-linux-gnueabihf-gcc -I"/root/beremiz/matiec/lib/C" -c "/tmp/.tmpDEF456/build/Res0.c" -o "/tmp/.tmpDEF456/build/Res0.o"
+arm-linux-gnueabihf-gcc -shared -o "/tmp/.tmpDEF456/build/libplc.so" "/tmp/.tmpDEF456/build/plc.o" "/tmp/.tmpDEF456/build/Res0.o" -lm -lpthread
+/tmp/.tmpDEF456/build/plc.o: In function `DATALOGGER_body__':
+plc.c:(.text+0x1a4): undefined reference to `__LOG_RECORD'
+plc.c:(.text+0x1c8): undefined reference to `__LOG_RECORD'
+/tmp/.tmpDEF456/build/Res0.o: In function `__init_Res0':
+Res0.c:(.text+0x48): undefined reference to `__INIT_EXTERNAL'
+collect2: error: ld returned 1 exit status
+
+Error: C compilation of target failed.
