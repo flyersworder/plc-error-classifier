@@ -617,3 +617,166 @@ def format_statistical_summary(
     )
 
     return "\n".join(lines)
+
+
+# ============================================================================
+# CLI Entry Point
+# ============================================================================
+
+
+def load_results_from_report(
+    report_path: str,
+) -> tuple[list[ClassificationResult], list[SuggestionResult], list[TestCaseResult]]:
+    """Load results from a saved evaluation report JSON file."""
+    import json
+
+    with open(report_path) as f:
+        report = json.load(f)
+
+    classification_results = []
+    suggestion_results = []
+    test_case_results = []
+
+    for r in report["results"]:
+        cls = r["classification"]
+        classification_results.append(
+            ClassificationResult(
+                test_case_id=cls["test_case_id"],
+                predicted_severity=cls["predicted_severity"],
+                predicted_stage=cls["predicted_stage"],
+                predicted_complexity=cls["predicted_complexity"],
+                expected_severity=cls["expected_severity"],
+                expected_stage=cls["expected_stage"],
+                expected_complexity=cls["expected_complexity"],
+                severity_correct=cls["severity_correct"],
+                stage_correct=cls["stage_correct"],
+                complexity_correct=cls["complexity_correct"],
+                all_correct=cls["all_correct"],
+            )
+        )
+
+        sug = r["suggestion"]
+        suggestion_results.append(
+            SuggestionResult(
+                test_case_id=sug["test_case_id"],
+                predicted_root_cause=sug["predicted_root_cause"],
+                predicted_fix_description=sug["predicted_fix_description"],
+                confidence=sug["confidence"],
+                expected_root_cause=sug["expected_root_cause"],
+                expected_fix_description=sug["expected_fix_description"],
+                root_cause_score=sug["root_cause_score"],
+                fix_quality_score=sug["fix_quality_score"],
+                overall_score=sug["overall_score"],
+                judge_reasoning=sug["judge_reasoning"],
+            )
+        )
+
+        test_case_results.append(
+            TestCaseResult(
+                test_case_id=r["test_case_id"],
+                test_case_name=r["test_case_name"],
+                classification=classification_results[-1],
+                suggestion=suggestion_results[-1],
+                response_time_ms=r["response_time_ms"],
+            )
+        )
+
+    return classification_results, suggestion_results, test_case_results
+
+
+def main() -> None:
+    """CLI entry point for metrics analysis with confidence intervals."""
+    import argparse
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        description="Analyze evaluation results with bootstrap confidence intervals"
+    )
+    parser.add_argument(
+        "report_path",
+        nargs="?",
+        help="Path to evaluation report JSON (default: latest in reports/)",
+    )
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=1000,
+        help="Number of bootstrap samples (default: 1000)",
+    )
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.95,
+        help="Confidence level (default: 0.95)",
+    )
+    args = parser.parse_args()
+
+    # Find report file
+    if args.report_path:
+        report_path = Path(args.report_path)
+    else:
+        # Find latest report
+        reports_dir = Path(__file__).parent / "reports"
+        reports = sorted(reports_dir.glob("eval_report_*.json"), reverse=True)
+        if not reports:
+            print("No evaluation reports found in reports/", file=sys.stderr)
+            print("Run: uv run python -m evaluation.run_eval", file=sys.stderr)
+            sys.exit(1)
+        report_path = reports[0]
+
+    print(f"Loading report: {report_path}")
+    print(f"Bootstrap samples: {args.n_bootstrap}")
+    print(f"Confidence level: {args.confidence:.0%}")
+
+    # Load results
+    classification_results, suggestion_results, test_case_results = load_results_from_report(
+        str(report_path)
+    )
+
+    print(f"Loaded {len(test_case_results)} test case results")
+    print()
+
+    # Calculate metrics with CIs
+    classification_metrics = calculate_classification_metrics(
+        classification_results,
+        compute_ci=True,
+        n_bootstrap=args.n_bootstrap,
+        confidence_level=args.confidence,
+    )
+
+    suggestion_metrics = calculate_suggestion_metrics(
+        suggestion_results,
+        compute_ci=True,
+        n_bootstrap=args.n_bootstrap,
+        confidence_level=args.confidence,
+    )
+
+    performance_metrics = calculate_performance_metrics(
+        test_case_results,
+        compute_ci=True,
+        n_bootstrap=args.n_bootstrap,
+        confidence_level=args.confidence,
+    )
+
+    # Print statistical summary
+    print(
+        format_statistical_summary(
+            classification_metrics,
+            suggestion_metrics,
+            performance_metrics,
+        )
+    )
+
+    # Print confusion matrices
+    print("\n" + "=" * 60)
+    print("CONFUSION MATRICES")
+    print("=" * 60)
+
+    for dim in ["severity", "stage", "complexity"]:
+        matrix = generate_confusion_matrix(classification_results, dim)
+        print(format_confusion_matrix(matrix, f"Confusion Matrix: {dim.upper()}"))
+
+
+if __name__ == "__main__":
+    main()

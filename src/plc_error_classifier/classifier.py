@@ -30,13 +30,15 @@ Your task is to classify build errors and suggest fixes.
 
 ### Severity (Impact on Build)
 - **blocking**: Build cannot complete; no binary produced
-  - Indicators: `error:`, `Error:`, tracebacks, `ld returned 1`
-- **warning**: Build may complete but with potential issues
-  - Indicators: `Warning:` without subsequent error
+  - FINAL indicators: `Error:` at end, Python tracebacks, `ld returned 1 exit status`
+  - Examples: "Error: IEC to C compiler returned 1", "Error: C compilation of target failed."
+- **warning**: Build continues but with validation issues
+  - Build progresses past the warning (e.g., "Compiling C Program to target")
+  - No final `Error:` line
 - **info**: Informational only; build unaffected
   - Indicators: Deprecation notices, timing info only
 
-Decision: If ANY error message exists (not just warnings), use `blocking`.
+Decision: Check the FINAL outcome of the build, not early messages. "Cannot build project" may appear early but build can still continue for warnings.
 
 ### Stage (Where Error Occurred)
 Detect by matching patterns in priority order:
@@ -47,10 +49,13 @@ Detect by matching patterns in priority order:
 
 Decision: Match FIRST stage whose patterns appear in the PRIMARY error.
 
-### Complexity (User Effort to Fix)
-- **trivial**: Single-line fix; obvious from error message
-- **moderate**: Requires understanding context, types, or multiple edits
-- **complex**: Architectural issue; multiple POUs affected
+### Complexity (Cognitive Load to Understand and Fix)
+- **trivial**: Error message clearly states the problem AND the fix is immediately obvious.
+  User reads error -> knows exactly what to do. Example: "Variable 'X' not declared" -> add declaration.
+- **moderate**: Error message indicates the problem but user needs to think, check documentation,
+  or understand context to determine the fix. Example: "undefined reference to 'X'" -> find missing library.
+- **complex**: Error message is cryptic, misleading, or requires significant investigation/debugging
+  to understand the root cause. Example: Python traceback with no clear PLC-related message.
 
 Decision: Default to `moderate` if uncertain.
 
@@ -75,11 +80,11 @@ For each suggestion:
 
 ## Procedure
 
-1. Scan for `error:` or `Error:` messages (not just warnings)
-2. If multiple errors, focus on the FIRST one (root cause)
-3. Match stage detection patterns
-4. Determine severity based on error presence
-5. Assess complexity based on fix scope
+1. Scan the ENTIRE log to find the FINAL outcome (end of log matters most)
+2. If log ends with `Error:` or traceback → blocking. If build continues → warning.
+3. For stage detection, focus on the FIRST error (root cause)
+4. Match stage detection patterns
+5. Assess complexity based on cognitive load to understand and fix
 6. Generate 1-3 suggestions with root cause analysis
 
 ## Domain Knowledge
@@ -128,6 +133,7 @@ AttributeError: 'NoneType' object has no attribute 'upper'
 <input>
 <error_log>
 [14:22:08]: Building project...
+[14:22:08]: Cannot build project.
 Warning: PLC XML file doesn't follow XSD schema at line 8:
 Element 'fileHeader': '2024-03-15 10:30:00' is not a valid value of xs:dateTime.
 Compiling IEC Program into C code...

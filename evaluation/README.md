@@ -2,6 +2,62 @@
 
 This directory contains the evaluation framework for the PLC Error Classifier. It provides tools for generating synthetic test cases, evaluating classifier performance, and generating detailed reports.
 
+## Target User Profile: PLC Programmers
+
+Understanding our target users is essential for accurate complexity classification. Based on industry research:
+
+### Background & Education
+| Aspect | Finding |
+|--------|---------|
+| Education | 53% bachelor's degree, 36% associate degree |
+| Fields | Electrical Engineering, Mechatronics, Computer Science, Mechanical Engineering |
+| Experience | Typically 3-5 years in manufacturing/controls |
+
+### Technical Skills
+- **Primary**: Ladder Logic, IEC 61131-3 languages (ST, FBD, LD, SFC), troubleshooting
+- **Programming**: C++, Python listed as valuable skills
+- **Systems**: SCADA, HMI, Allen Bradley, RSLogix platforms
+- **Domain**: Control systems, automated manufacturing, hardware/software integration
+
+### Key Insight
+PLC programmers are **technically sophisticated engineers** who:
+- Understand hardware/software integration
+- Often know C/C++ and Python
+- Are experienced troubleshooters used to investigating complex issues
+- Have strong problem-solving skills
+
+**Sources**: [Indeed](https://www.indeed.com/hire/job-description/plc-programmer), [Zippia](https://www.zippia.com/plc-programmer-jobs/education/), [SolisPLC](https://www.solisplc.com/blog/plc-programming-jobs)
+
+## Complexity Classification (Cognitive Load)
+
+Complexity measures the **cognitive load** required for a technically capable PLC programmer to understand and fix an error. This is NOT about domain expertise, but about how actionable the error message is.
+
+### Definitions
+
+| Level | Definition | User Experience | Examples |
+|-------|------------|-----------------|----------|
+| **Trivial** | Error message clearly states the problem AND the fix is immediately obvious | "I read this, I know exactly what to change" | "Variable 'X' not declared" → declare it |
+| **Moderate** | Error indicates the problem but requires investigation, context, or tracing back to source | "I understand the error, but need to investigate" | "undefined reference to 'X'" → find which library/code |
+| **Complex** | Error is cryptic, misleading, or requires significant investigation to understand root cause | "What does this even mean?" or "Where do I start?" | Cascading errors, cryptic tracebacks, linker issues |
+
+### Classification Guidelines
+
+**TRIVIAL** - Fix is obvious from the message:
+- "Assignment to CONSTANT not allowed" → remove assignment or constant attribute
+- "Variable not declared" → add declaration
+- "Type mismatch: expected REAL, got INT" → change the type
+
+**MODERATE** - Requires investigation but error is understandable:
+- C compilation errors (syntax, types) → understand error, trace back to PLC code
+- SFC/FBD connection errors → check graphical diagram
+- XML schema errors → check project configuration
+
+**COMPLEX** - Requires significant investigation:
+- Linker errors (undefined reference, library not found) → build system investigation
+- Python tracebacks without clear context ("NoneType has no attribute") → no obvious source
+- Cascading errors → must find root cause among multiple errors
+- Architecture/relocation errors → deep build system knowledge
+
 ## Overview
 
 ```

@@ -7,16 +7,11 @@ This module provides:
 - Evaluation runner and reporting
 """
 
-from .generator import SyntheticTestGenerator
+# Note: Imports are structured to avoid RuntimeWarning when running modules as __main__
+# Modules with CLI entry points (generator.py, run_eval.py, metrics.py) should be
+# imported directly when needed, not through __init__.py
+
 from .judge import SuggestionJudge, evaluate_batch
-from .metrics import (
-    calculate_classification_metrics,
-    calculate_performance_metrics,
-    calculate_suggestion_metrics,
-    format_confusion_matrix,
-    generate_confusion_matrix,
-    identify_failures,
-)
 from .models import (
     ClassificationMetrics,
     ClassificationResult,
@@ -31,7 +26,6 @@ from .models import (
     TestSuite,
 )
 from .patterns import ERROR_PATTERNS, ErrorPattern
-from .run_eval import EvaluationRunner, format_report
 
 __all__ = [
     "ERROR_PATTERNS",
@@ -39,23 +33,19 @@ __all__ = [
     "ClassificationResult",
     "ErrorPattern",
     "EvaluationReport",
-    "EvaluationRunner",
     "ExpectedClassification",
     "ExpectedFix",
     "PerformanceMetrics",
     "SuggestionJudge",
     "SuggestionMetrics",
     "SuggestionResult",
-    "SyntheticTestGenerator",
     "TestCase",
     "TestCaseResult",
     "TestSuite",
-    "calculate_classification_metrics",
-    "calculate_performance_metrics",
-    "calculate_suggestion_metrics",
     "evaluate_batch",
-    "format_confusion_matrix",
-    "format_report",
-    "generate_confusion_matrix",
-    "identify_failures",
 ]
+
+# For CLI modules, import directly:
+#   from evaluation.generator import SyntheticTestGenerator
+#   from evaluation.run_eval import EvaluationRunner, format_report
+#   from evaluation.metrics import calculate_classification_metrics, ...

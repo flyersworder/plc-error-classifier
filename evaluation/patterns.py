@@ -220,13 +220,13 @@ CODE_GENERATION_PATTERNS: list[ErrorPattern] = [
         description="POU has no variable declarations in interface section",
         variations=2,
     ),
-    # Moderate (10 cases)
+    # Complex (Python tracebacks are cryptic for PLC developers)
     ErrorPattern(
         id="codegen_004",
         name="empty_body_nonetype",
         stage="code_generation",
         severity="blocking",
-        complexity="moderate",
+        complexity="complex",  # "NoneType" is meaningless to PLC developers
         error_message="AttributeError: 'NoneType' object has no attribute",
         category="nonetype_attribute",
         description="Body element EXISTS but is EMPTY (no ST/FBD/LD content). "
@@ -277,13 +277,13 @@ CODE_GENERATION_PATTERNS: list[ErrorPattern] = [
         description="Block output variable referenced but not found - connection is broken",
         variations=1,
     ),
-    # Complex (7 cases)
+    # Moderate (SFC errors - message is clear but requires SFC knowledge)
     ErrorPattern(
         id="codegen_009",
         name="sfc_transition_not_connected",
         stage="code_generation",
         severity="blocking",
-        complexity="complex",
+        complexity="moderate",  # Message is clear: "must be connected" - connect it
         error_message='SFC transition in POU "{pou_name}" must be connected',
         category="sfc_error",
         description="SFC transition element not properly connected to steps",
@@ -294,7 +294,7 @@ CODE_GENERATION_PATTERNS: list[ErrorPattern] = [
         name="sfc_jump_invalid_step",
         stage="code_generation",
         severity="blocking",
-        complexity="complex",
+        complexity="moderate",  # Message tells you which step is wrong
         error_message='SFC jump in pou "{pou_name}" refers to non-existent SFC step "{step}"',
         category="sfc_error",
         description="SFC jump element references a step name that doesn't exist",
@@ -305,18 +305,19 @@ CODE_GENERATION_PATTERNS: list[ErrorPattern] = [
         name="sfc_transition_not_connected_prev",
         stage="code_generation",
         severity="blocking",
-        complexity="complex",
+        complexity="moderate",  # Message is clear about what's wrong
         error_message='Transition with content "{transition}" not connected to a previous step in "{pou_name}" POU',
         category="sfc_error",
         description="SFC transition has no connection to a preceding step",
         variations=2,
     ),
+    # Complex (cryptic errors requiring investigation)
     ErrorPattern(
         id="codegen_012",
         name="nested_pou_error",
         stage="code_generation",
         severity="blocking",
-        complexity="complex",
+        complexity="complex",  # "KeyError:" is cryptic - requires investigation
         error_message="KeyError:",
         category="keyerror",
         description="Internal generator error from malformed nested POU structure",
@@ -446,7 +447,7 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="invalid_array_subscript",
         stage="iec_compilation",
         severity="blocking",
-        complexity="moderate",
+        complexity="trivial",  # Clear message: use integer for array index
         error_message="Invalid data type for array subscript",
         category="array_error",
         description="Non-integer used as array index",
@@ -468,7 +469,7 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="function_param_type_mismatch",
         stage="iec_compilation",
         severity="blocking",
-        complexity="moderate",
+        complexity="trivial",  # Message shows "Expected X, got Y" - fix is clear
         error_message="Data type incompatibility between parameter",
         category="function_error",
         description="Function called with incompatible parameter type",
@@ -534,19 +535,19 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="fb_output_assignment",
         stage="iec_compilation",
         severity="blocking",
-        complexity="moderate",
+        complexity="trivial",  # "not allowed" - fix is obvious: don't assign to outputs
         error_message="Assignment to FB output variable is not allowed",
         category="fb_error",
         description="Attempting to assign a value to a function block output variable",
         variations=2,
     ),
-    # Complex (7 cases)
+    # Complex (truly cryptic errors requiring investigation)
     ErrorPattern(
         id="iec_020",
         name="cascading_type_errors",
         stage="iec_compilation",
         severity="blocking",
-        complexity="complex",
+        complexity="complex",  # Multiple errors from one root cause - requires investigation
         error_message="Incompatible data types",
         category="cascading_error",
         description="One type error causes multiple downstream errors",
@@ -557,18 +558,19 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="overload_resolution_ambiguous",
         stage="iec_compilation",
         severity="blocking",
-        complexity="complex",
+        complexity="complex",  # Requires understanding overload resolution rules
         error_message="Unable to resolve which overloaded",
         category="overload_error",
         description="Multiple function overloads match call signature - compiler cannot choose",
         variations=2,
     ),
+    # Trivial (message clearly states problem and fix is obvious)
     ErrorPattern(
         id="iec_022",
         name="for_control_var_assignment",
         stage="iec_compilation",
         severity="blocking",
-        complexity="complex",
+        complexity="trivial",  # "not allowed" - obviously don't do it
         error_message="Assignment to FOR control variable is not allowed",
         category="loop_error",
         description="Attempting to modify the FOR loop control variable inside the loop body",
@@ -579,7 +581,7 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="literal_assignment",
         stage="iec_compilation",
         severity="blocking",
-        complexity="complex",
+        complexity="trivial",  # "not allowed" - obviously don't assign to literals
         error_message="Assignment to an expression or a literal value is not allowed",
         category="assignment_error",
         description="Attempting to assign to a literal or computed expression (not an lvalue)",
@@ -592,13 +594,13 @@ IEC_COMPILATION_PATTERNS: list[ErrorPattern] = [
 # =============================================================================
 
 C_COMPILATION_PATTERNS: list[ErrorPattern] = [
-    # Trivial (3 cases)
+    # Moderate (C errors - PLC devs understand C but need to trace back to PLC code)
     ErrorPattern(
         id="c_001",
         name="simple_syntax_error",
         stage="c_compilation",
         severity="blocking",
-        complexity="trivial",
+        complexity="moderate",  # Understand error, need to trace back to PLC code
         error_message="error: expected ';'",
         category="syntax_error",
         description="Basic C syntax error from malformed generated code",
@@ -609,19 +611,19 @@ C_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="undeclared_identifier",
         stage="c_compilation",
         severity="blocking",
-        complexity="trivial",
+        complexity="moderate",  # Understand error, need to trace back to PLC code
         error_message="error: undeclared identifier",
         category="undeclared",
         description="C variable not declared (generator bug)",
         variations=1,
     ),
-    # Moderate (8 cases)
+    # Complex (linker/C errors are foreign to PLC developers)
     ErrorPattern(
         id="c_003",
         name="undefined_reference",
         stage="c_compilation",
         severity="blocking",
-        complexity="moderate",
+        complexity="complex",  # PLC devs don't understand linker errors
         error_message="undefined reference to",
         category="linker_error",
         description="Linker cannot find symbol definition",
@@ -632,7 +634,7 @@ C_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="missing_header",
         stage="c_compilation",
         severity="blocking",
-        complexity="moderate",
+        complexity="complex",  # PLC devs don't understand C includes
         error_message="fatal error: No such file or directory",
         category="include_error",
         description="Required header file not found",
@@ -643,7 +645,7 @@ C_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="incompatible_pointer_type",
         stage="c_compilation",
         severity="warning",
-        complexity="moderate",
+        complexity="moderate",  # PLC devs understand C, need to trace back
         error_message="warning: incompatible pointer type",
         category="type_error",
         description="Pointer type mismatch in generated code",
@@ -654,7 +656,7 @@ C_COMPILATION_PATTERNS: list[ErrorPattern] = [
         name="implicit_declaration",
         stage="c_compilation",
         severity="warning",
-        complexity="moderate",
+        complexity="moderate",  # PLC devs understand C, need to trace back
         error_message="warning: implicit declaration of function",
         category="undeclared",
         description="Function used without declaration/prototype",
