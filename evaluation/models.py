@@ -25,7 +25,7 @@ class ExpectedFix(BaseModel):
     fix_location: str | None = None  # Where in the code (e.g., "line 30", "localVars section")
 
 
-class TestCase(BaseModel):
+class EvalTestCase(BaseModel):
     """A single test case for evaluation."""
 
     id: str  # Unique identifier (e.g., "test_001")
@@ -45,12 +45,12 @@ class TestCase(BaseModel):
     base_pattern: str  # The error pattern this was generated from
 
 
-class TestSuite(BaseModel):
+class EvalTestSuite(BaseModel):
     """Collection of test cases."""
 
     name: str
     description: str
-    test_cases: list[TestCase]
+    test_cases: list[EvalTestCase]
     version: str = "1.0.0"
 
 
@@ -102,7 +102,7 @@ class SuggestionResult(BaseModel):
     judge_reasoning: str  # Explanation from the judge
 
 
-class TestCaseResult(BaseModel):
+class EvalCaseResult(BaseModel):
     """Complete evaluation result for a single test case."""
 
     test_case_id: str
@@ -215,7 +215,7 @@ class EvaluationReport(BaseModel):
     performance_metrics: PerformanceMetrics
 
     # Detailed results
-    results: list[TestCaseResult]
+    results: list[EvalCaseResult]
 
     # Failure analysis
     failed_cases: list[str] = []  # IDs of cases where classification was wrong

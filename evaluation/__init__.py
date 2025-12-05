@@ -15,15 +15,15 @@ from .judge import SuggestionJudge, evaluate_batch
 from .models import (
     ClassificationMetrics,
     ClassificationResult,
+    EvalCaseResult,
+    EvalTestCase,
+    EvalTestSuite,
     EvaluationReport,
     ExpectedClassification,
     ExpectedFix,
     PerformanceMetrics,
     SuggestionMetrics,
     SuggestionResult,
-    TestCase,
-    TestCaseResult,
-    TestSuite,
 )
 from .patterns import ERROR_PATTERNS, ErrorPattern
 
@@ -32,6 +32,9 @@ __all__ = [
     "ClassificationMetrics",
     "ClassificationResult",
     "ErrorPattern",
+    "EvalCaseResult",
+    "EvalTestCase",
+    "EvalTestSuite",
     "EvaluationReport",
     "ExpectedClassification",
     "ExpectedFix",
@@ -39,9 +42,6 @@ __all__ = [
     "SuggestionJudge",
     "SuggestionMetrics",
     "SuggestionResult",
-    "TestCase",
-    "TestCaseResult",
-    "TestSuite",
     "evaluate_batch",
 ]
 

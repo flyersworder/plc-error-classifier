@@ -14,10 +14,10 @@ from json_repair import repair_json
 from pydantic import BaseModel, Field
 
 from .models import (
+    EvalTestCase,
+    EvalTestSuite,
     ExpectedClassification,
     ExpectedFix,
-    TestCase,
-    TestSuite,
 )
 from .patterns import ERROR_PATTERNS, ErrorPattern, get_pattern_distribution
 
@@ -53,7 +53,7 @@ class GeneratedTestCase(BaseModel):
 # Configuration
 # ============================================================================
 
-# Use Flash-Lite for generation (cost-efficient)
+# Use Flash-Lite for generation (cost-efficient, similar quality for this task)
 GENERATOR_MODEL = "gemini-2.5-flash-lite"
 
 # Path to sample data for few-shot examples
@@ -279,7 +279,7 @@ class SyntheticTestGenerator:
         variation_num: int = 1,
         use_search: bool = False,
         max_retries: int = 3,
-    ) -> TestCase:
+    ) -> EvalTestCase:
         """Generate a single test case for an error pattern.
 
         Args:
@@ -398,7 +398,7 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
 
                 # Build test case with variation-aware ID
                 variation_suffix = f"_v{variation_num}" if variation_num > 1 else ""
-                return TestCase(
+                return EvalTestCase(
                     id=f"test_{pattern.id}{variation_suffix}_{uuid.uuid4().hex[:8]}",
                     name=f"{pattern.name}{variation_suffix}",
                     description=f"Generated test case for {pattern.name} (variation {variation_num}): {pattern.description}",
@@ -425,7 +425,7 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
         self,
         patterns: list[ErrorPattern] | None = None,
         use_search_for_complex: bool = True,
-    ) -> TestSuite:
+    ) -> EvalTestSuite:
         """Generate a complete test suite with concurrent requests.
 
         Generates multiple variations per pattern based on pattern.variations.
@@ -461,7 +461,7 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Collect successful results
-        test_cases: list[TestCase] = []
+        test_cases: list[EvalTestCase] = []
         failed_count = 0
         for (pattern, var_num), result in zip(task_info, results, strict=False):
             if isinstance(result, Exception):
@@ -474,7 +474,7 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
         if failed_count > 0:
             print(f"\nWarning: {failed_count} test cases failed to generate")
 
-        return TestSuite(
+        return EvalTestSuite(
             name="PLC Error Classifier Evaluation Suite",
             description=f"Synthetic test cases covering all 4 build stages ({len(test_cases)} cases)",
             test_cases=test_cases,
@@ -487,14 +487,14 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
         pattern: ErrorPattern,
         variation_num: int,
         use_search: bool,
-    ) -> TestCase:
+    ) -> EvalTestCase:
         """Generate test case with progress logging."""
         test_case = await self.generate_test_case(aclient, pattern, variation_num, use_search)
         var_label = f" v{variation_num}" if pattern.variations > 1 else ""
         print(f"Generated: {test_case.id} ({pattern.name}{var_label})")
         return test_case
 
-    def save_test_suite(self, suite: TestSuite, filename: str = "test_suite.json") -> Path:
+    def save_test_suite(self, suite: EvalTestSuite, filename: str = "test_suite.json") -> Path:
         """Save test suite to file."""
         TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
         output_path = TEST_CASES_DIR / filename

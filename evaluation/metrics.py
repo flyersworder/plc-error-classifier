@@ -18,10 +18,10 @@ from .models import (
     ClassificationMetrics,
     ClassificationResult,
     ConfidenceInterval,
+    EvalCaseResult,
     PerformanceMetrics,
     SuggestionMetrics,
     SuggestionResult,
-    TestCaseResult,
 )
 
 T = TypeVar("T")
@@ -371,7 +371,7 @@ def calculate_suggestion_metrics(
 
 
 def calculate_performance_metrics(
-    results: list[TestCaseResult],
+    results: list[EvalCaseResult],
     compute_ci: bool = False,
     n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
     confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
@@ -422,7 +422,7 @@ def calculate_performance_metrics(
     return metrics
 
 
-def identify_failures(results: list[TestCaseResult]) -> tuple[list[str], list[str]]:
+def identify_failures(results: list[EvalCaseResult]) -> tuple[list[str], list[str]]:
     """Identify failed classifications and low-quality suggestions.
 
     Returns:
@@ -626,7 +626,7 @@ def format_statistical_summary(
 
 def load_results_from_report(
     report_path: str,
-) -> tuple[list[ClassificationResult], list[SuggestionResult], list[TestCaseResult]]:
+) -> tuple[list[ClassificationResult], list[SuggestionResult], list[EvalCaseResult]]:
     """Load results from a saved evaluation report JSON file."""
     import json
 
@@ -672,7 +672,7 @@ def load_results_from_report(
         )
 
         test_case_results.append(
-            TestCaseResult(
+            EvalCaseResult(
                 test_case_id=r["test_case_id"],
                 test_case_name=r["test_case_name"],
                 classification=classification_results[-1],

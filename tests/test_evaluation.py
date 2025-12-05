@@ -21,14 +21,14 @@ from evaluation.models import (
     STAGE_INDICATORS,
     ClassificationMetrics,
     ClassificationResult,
+    EvalCaseResult,
+    EvalTestCase,
+    EvalTestSuite,
     ExpectedClassification,
     ExpectedFix,
     PerformanceMetrics,
     SuggestionMetrics,
     SuggestionResult,
-    TestCase,
-    TestCaseResult,
-    TestSuite,
 )
 from evaluation.patterns import ERROR_PATTERNS
 
@@ -82,12 +82,12 @@ class TestExpectedFix:
         assert fix.fix_location is None
 
 
-class TestTestCase:
-    """Tests for TestCase model."""
+class TestEvalTestCase:
+    """Tests for EvalTestCase model."""
 
     def test_complete_test_case(self) -> None:
         """Test complete test case with all fields."""
-        test_case = TestCase(
+        test_case = EvalTestCase(
             id="test_001",
             name="constant_assignment",
             description="Test constant assignment error",
@@ -110,7 +110,7 @@ class TestTestCase:
 
     def test_test_case_without_xml(self) -> None:
         """Test that source_xml is optional."""
-        test_case = TestCase(
+        test_case = EvalTestCase(
             id="test_002",
             name="undeclared_variable",
             description="Test undeclared variable",
@@ -130,12 +130,12 @@ class TestTestCase:
         assert test_case.source_xml is None
 
 
-class TestTestSuite:
-    """Tests for TestSuite model."""
+class TestEvalTestSuite:
+    """Tests for EvalTestSuite model."""
 
     def test_test_suite(self) -> None:
         """Test test suite creation."""
-        suite = TestSuite(
+        suite = EvalTestSuite(
             name="Test Suite",
             description="A test suite",
             test_cases=[],
@@ -428,7 +428,7 @@ class TestCalculatePerformanceMetrics:
         results = []
         for i, time_ms in enumerate([100, 200, 300, 400, 500]):
             results.append(
-                TestCaseResult(
+                EvalCaseResult(
                     test_case_id=f"test_{i}",
                     test_case_name=f"test_{i}",
                     classification=ClassificationResult(
@@ -473,7 +473,7 @@ class TestIdentifyFailures:
     def test_identify_failures(self) -> None:
         """Test identification of failed cases."""
         results = [
-            TestCaseResult(
+            EvalCaseResult(
                 test_case_id="test_pass",
                 test_case_name="test_pass",
                 classification=ClassificationResult(
@@ -503,7 +503,7 @@ class TestIdentifyFailures:
                 ),
                 response_time_ms=100.0,
             ),
-            TestCaseResult(
+            EvalCaseResult(
                 test_case_id="test_fail_class",
                 test_case_name="test_fail_class",
                 classification=ClassificationResult(
@@ -533,7 +533,7 @@ class TestIdentifyFailures:
                 ),
                 response_time_ms=100.0,
             ),
-            TestCaseResult(
+            EvalCaseResult(
                 test_case_id="test_low_quality",
                 test_case_name="test_low_quality",
                 classification=ClassificationResult(
@@ -972,7 +972,7 @@ class TestMetricsWithConfidenceIntervals:
     def test_performance_metrics_with_ci(self) -> None:
         """Test performance metrics with CI calculation."""
         results = [
-            TestCaseResult(
+            EvalCaseResult(
                 test_case_id=f"test_{i}",
                 test_case_name=f"test_{i}",
                 classification=ClassificationResult(

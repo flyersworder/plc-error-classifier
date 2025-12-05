@@ -26,10 +26,10 @@ from .metrics import (
 )
 from .models import (
     ClassificationResult,
+    EvalCaseResult,
+    EvalTestCase,
+    EvalTestSuite,
     EvaluationReport,
-    TestCase,
-    TestCaseResult,
-    TestSuite,
 )
 
 # Load environment variables
@@ -119,9 +119,9 @@ class EvaluationRunner:
     async def evaluate_test_case(
         self,
         judge_client: genai.Client,
-        test_case: TestCase,
+        test_case: EvalTestCase,
         hide_xml: bool = False,
-    ) -> TestCaseResult:
+    ) -> EvalCaseResult:
         """Evaluate a single test case.
 
         Args:
@@ -130,7 +130,7 @@ class EvaluationRunner:
             hide_xml: If True, don't pass source_xml to classifier.
 
         Returns:
-            TestCaseResult with classification and suggestion evaluation.
+            EvalCaseResult with classification and suggestion evaluation.
         """
         # Rate limiting
         if self._semaphore is None:
@@ -192,7 +192,7 @@ class EvaluationRunner:
                 confidence=best_suggestion.confidence if best_suggestion else 0.5,
             )
 
-            return TestCaseResult(
+            return EvalCaseResult(
                 test_case_id=test_case.id,
                 test_case_name=test_case.name,
                 classification=classification_result,
@@ -203,11 +203,11 @@ class EvaluationRunner:
     async def _evaluate_with_logging(
         self,
         judge_client: genai.Client,
-        test_case: TestCase,
+        test_case: EvalTestCase,
         index: int,
         total: int,
         hide_xml: bool = False,
-    ) -> TestCaseResult | None:
+    ) -> EvalCaseResult | None:
         """Evaluate a test case with progress logging."""
         try:
             xml_status = " (no XML)" if hide_xml else ""
@@ -223,7 +223,7 @@ class EvaluationRunner:
 
     async def run_evaluation(
         self,
-        suite: TestSuite,
+        suite: EvalTestSuite,
         random_xml_hiding: bool = True,
     ) -> EvaluationReport:
         """Run evaluation on entire test suite concurrently.
@@ -270,7 +270,7 @@ class EvaluationRunner:
             all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out None results and exceptions
-        results: list[TestCaseResult] = []
+        results: list[EvalCaseResult] = []
         for result in all_results:
             if isinstance(result, Exception):
                 print(f"Warning: Task failed with exception: {result}")
@@ -429,7 +429,7 @@ async def main(test_suite_path: str | None = None) -> None:
 
     print(f"Loading test suite from: {suite_path}")
     with open(suite_path) as f:
-        suite = TestSuite.model_validate_json(f.read())
+        suite = EvalTestSuite.model_validate_json(f.read())
 
     # Run evaluation
     runner = EvaluationRunner()

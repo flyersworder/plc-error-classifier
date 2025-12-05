@@ -71,7 +71,7 @@ Complexity measures the **cognitive load** required for a technically capable PL
      └──────────────┘         └──────────────┘         └──────────────┘
            │                        │                        │
            ▼                        ▼                        ▼
-      test_suite.json         TestCaseResult          eval_report.json
+      test_suite.json         EvalCaseResult          eval_report.json
                               + LLM Judge scores      + markdown summary
 ```
 
@@ -124,7 +124,7 @@ Defines all data structures used throughout the evaluation framework.
 #### Test Case Models
 
 ```python
-class TestCase:
+class EvalTestCase:
     id: str                           # Unique identifier (e.g., "test_xml_001_a1b2c3d4")
     name: str                         # Descriptive name (e.g., "datetime_format_error")
     description: str                  # Human-readable description
@@ -335,7 +335,7 @@ from evaluation import EvaluationRunner, TestSuite, format_report
 
 # Load test suite
 with open("evaluation/test_cases/test_suite.json") as f:
-    suite = TestSuite.model_validate_json(f.read())
+    suite = EvalTestSuite.model_validate_json(f.read())
 
 # Run evaluation
 runner = EvaluationRunner()
