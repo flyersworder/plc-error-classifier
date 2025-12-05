@@ -6,7 +6,6 @@ import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from dotenv import load_dotenv
 from google import genai
@@ -20,6 +19,7 @@ from .models import (
     TestCase,
     TestSuite,
 )
+from .patterns import ERROR_PATTERNS, ErrorPattern, get_pattern_distribution
 
 # Load environment variables
 load_dotenv()
@@ -63,279 +63,8 @@ SAMPLE_DATA_DIR = Path(__file__).parent.parent / "sample_data"
 TEST_CASES_DIR = Path(__file__).parent / "test_cases"
 
 
-# ============================================================================
-# Error Pattern Definitions
-# ============================================================================
-
-
-class ErrorPattern(BaseModel):
-    """Definition of an error pattern to generate test cases from.
-
-    Attributes:
-        id: Unique identifier for the pattern.
-        name: Human-readable name.
-        stage: Build pipeline stage where error occurs.
-        severity: Impact on build process.
-            - "blocking": Build fails completely, cannot proceed.
-            - "warning": Build continues despite the issue.
-            - "info": Informational message, no impact.
-        complexity: User's cognitive load to resolve the error.
-            This measures how much effort a programmer needs to go from
-            seeing the error to fixing it. It combines message clarity
-            and domain knowledge required.
-            - "trivial": Error message clearly states the problem AND the fix
-              is immediately obvious. User reads error → knows what to do.
-              Example: "Variable 'X' not declared" → add declaration.
-            - "moderate": Error message indicates the problem but user needs
-              to think, check documentation, or understand context to fix.
-              Example: "undefined reference to 'X'" → need to find missing library.
-            - "complex": Error message is cryptic, misleading, or requires
-              significant investigation/debugging to understand root cause.
-              Example: Python traceback with no clear PLC-related message.
-        error_message: The core error message pattern to match.
-        category: Error category for grouping similar errors.
-        description: What triggers this error.
-    """
-
-    id: str
-    name: str
-    stage: Literal["xml_validation", "code_generation", "iec_compilation", "c_compilation"]
-    severity: Literal["blocking", "warning", "info"]
-    complexity: Literal["trivial", "moderate", "complex"]
-    error_message: str  # The core error message pattern
-    category: str  # Error category for grouping
-    description: str  # What triggers this error
-
-
-# Define error patterns to generate test cases from
-ERROR_PATTERNS: list[ErrorPattern] = [
-    # =========================================================================
-    # XML Validation Errors (3-5 cases)
-    # =========================================================================
-    ErrorPattern(
-        id="xml_001",
-        name="datetime_format_error",
-        stage="xml_validation",
-        severity="warning",
-        complexity="trivial",
-        error_message="'{value}' is not a valid value of the atomic type 'xs:dateTime'",
-        category="datetime_format",
-        description="DateTime attribute uses space instead of 'T' separator",
-    ),
-    ErrorPattern(
-        id="xml_002",
-        name="missing_child_element",
-        stage="xml_validation",
-        severity="warning",
-        complexity="moderate",
-        error_message="Missing child element(s). Expected is one of",
-        category="missing_child_element",
-        description="Required child element is missing from parent",
-    ),
-    ErrorPattern(
-        id="xml_003",
-        name="invalid_attribute_value",
-        stage="xml_validation",
-        severity="warning",
-        complexity="trivial",
-        error_message="'{value}' is not a valid value for attribute '{name}'",
-        category="invalid_attribute",
-        description="Attribute has invalid value for its type",
-    ),
-    # =========================================================================
-    # Code Generation Errors (3-5 cases)
-    # =========================================================================
-    ErrorPattern(
-        id="codegen_001",
-        name="empty_body_nonetype",
-        stage="code_generation",
-        severity="blocking",
-        complexity="complex",  # Python traceback only, no clear PLC error message
-        error_message="AttributeError: 'NoneType' object has no attribute 'upper'",
-        category="nonetype_attribute",
-        description="Body element EXISTS but is EMPTY (no ST/FBD/LD content inside). "
-        "This causes a Python traceback with NoneType error. "
-        "The error log must show a Python traceback ending with AttributeError.",
-    ),
-    ErrorPattern(
-        id="codegen_002",
-        name="no_body_defined",
-        stage="code_generation",
-        severity="blocking",
-        complexity="trivial",  # Clear message: "No body defined in X POU" → add body element
-        error_message='No body defined in "{pou_name}" POU',
-        category="no_body_defined",
-        description="Body element is COMPLETELY MISSING from the POU XML (not just empty). "
-        "Beremiz detects this early and shows a clear error message. "
-        "The error log must contain: 'Error: No body defined in \"X\" POU' (not a Python traceback).",
-    ),
-    ErrorPattern(
-        id="codegen_003",
-        name="undefined_block_type",
-        stage="code_generation",
-        severity="blocking",
-        complexity="trivial",  # Clear message: "Undefined block type X" → define or import the FB
-        error_message='Undefined block type "{block_name}" in "{pou_name}" POU',
-        category="undefined_block_type",
-        description="Reference to unknown function block in FBD/LD",
-    ),
-    ErrorPattern(
-        id="codegen_004",
-        name="sfc_transition_not_connected",
-        stage="code_generation",
-        severity="blocking",
-        complexity="complex",
-        error_message='SFC transition in POU "{pou_name}" must be connected',
-        category="sfc_transition_error",
-        description="SFC transition element not properly connected",
-    ),
-    # =========================================================================
-    # IEC Compilation Errors (12-18 cases)
-    # =========================================================================
-    ErrorPattern(
-        id="iec_001",
-        name="constant_assignment",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Assignment to CONSTANT variables is not allowed",
-        category="constant_assignment",
-        description="Attempting to assign value to a constant variable",
-    ),
-    ErrorPattern(
-        id="iec_002",
-        name="undeclared_variable",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Variable not declared in this scope",
-        category="undeclared_variable",
-        description="Using a variable that hasn't been declared",
-    ),
-    ErrorPattern(
-        id="iec_003",
-        name="type_mismatch_assignment",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",  # Clear message: "Expected INT, got STRING" → fix the type
-        error_message="Incompatible data types for ':=' operation",
-        category="type_mismatch_simple",
-        description="Assignment between incompatible types",
-    ),
-    ErrorPattern(
-        id="iec_004",
-        name="invalid_for_control_var",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Invalid data type for 'FOR' control variable",
-        category="invalid_for_loop",
-        description="FOR loop control variable is not an integer type",
-    ),
-    ErrorPattern(
-        id="iec_005",
-        name="invalid_if_condition",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Invalid data type for 'IF' condition (should be BOOL)",
-        category="invalid_condition_type",
-        description="IF condition expression is not BOOL type",
-    ),
-    ErrorPattern(
-        id="iec_006",
-        name="integer_overflow",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Numerical value exceeds range for ANY_INT data type",
-        category="type_mismatch_simple",
-        description="Integer literal too large for target type",
-    ),
-    ErrorPattern(
-        id="iec_007",
-        name="invalid_time_syntax",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Invalid syntax for TIME data type",
-        category="type_mismatch_simple",
-        description="Malformed TIME literal",
-    ),
-    ErrorPattern(
-        id="iec_008",
-        name="duplicate_parameter",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",  # Clear message: "Duplicate parameter X" → remove the duplicate
-        error_message="Duplicate parameter '{param}' when invoking",
-        category="function_parameter_error",
-        description="Same parameter specified twice in function call",
-    ),
-    ErrorPattern(
-        id="iec_009",
-        name="invalid_array_subscript",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="moderate",
-        error_message="Invalid data type for array subscript field",
-        category="array_subscript_error",
-        description="Non-integer used as array index",
-    ),
-    ErrorPattern(
-        id="iec_010",
-        name="struct_field_not_found",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="moderate",
-        error_message="Undeclared structured (or FB) variable, or non-existant field",
-        category="undeclared_variable",
-        description="Accessing non-existent field on struct or FB",
-    ),
-    ErrorPattern(
-        id="iec_011",
-        name="invalid_while_condition",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="Invalid data type for 'WHILE' condition",
-        category="invalid_condition_type",
-        description="WHILE condition is not BOOL type",
-    ),
-    ErrorPattern(
-        id="iec_012",
-        name="case_not_integer",
-        stage="iec_compilation",
-        severity="blocking",
-        complexity="trivial",
-        error_message="'CASE' quantity not an integer or enumerated",
-        category="invalid_condition_type",
-        description="CASE expression is not integer or enum",
-    ),
-    # =========================================================================
-    # C Compilation Errors (2-4 cases)
-    # =========================================================================
-    ErrorPattern(
-        id="c_001",
-        name="undefined_reference",
-        stage="c_compilation",
-        severity="blocking",
-        complexity="moderate",
-        error_message="undefined reference to '{symbol}'",
-        category="undefined_reference",
-        description="Linker cannot find symbol definition",
-    ),
-    ErrorPattern(
-        id="c_002",
-        name="missing_header",
-        stage="c_compilation",
-        severity="blocking",
-        complexity="moderate",
-        error_message="fatal error: {header}: No such file or directory",
-        category="missing_header",
-        description="Required header file not found",
-    ),
-]
+# Note: ErrorPattern class, ERROR_PATTERNS list, and get_pattern_distribution()
+# are now imported from .patterns module for maintainability.
 
 
 # ============================================================================
@@ -522,6 +251,7 @@ class SyntheticTestGenerator:
         self,
         aclient: genai.Client,
         pattern: ErrorPattern,
+        variation_num: int = 1,
         use_search: bool = False,
         max_retries: int = 3,
     ) -> TestCase:
@@ -530,6 +260,7 @@ class SyntheticTestGenerator:
         Args:
             aclient: Async Gemini client (from client.aio context manager).
             pattern: The error pattern to generate a test case for.
+            variation_num: Variation number (1-based) for unique IDs and prompting.
             use_search: If True, enables Google Search grounding for better accuracy.
             max_retries: Maximum retries if XML validation fails.
 
@@ -640,11 +371,12 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
                             )
                             # Continue with invalid XML - we'll report it in quality check
 
-                # Build test case
+                # Build test case with variation-aware ID
+                variation_suffix = f"_v{variation_num}" if variation_num > 1 else ""
                 return TestCase(
-                    id=f"test_{pattern.id}_{uuid.uuid4().hex[:8]}",
-                    name=pattern.name,
-                    description=f"Generated test case for {pattern.name}: {pattern.description}",
+                    id=f"test_{pattern.id}{variation_suffix}_{uuid.uuid4().hex[:8]}",
+                    name=f"{pattern.name}{variation_suffix}",
+                    description=f"Generated test case for {pattern.name} (variation {variation_num}): {pattern.description}",
                     error_log=result["error_log"],
                     source_xml=source_xml,
                     expected_classification=ExpectedClassification(
@@ -671,6 +403,8 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
     ) -> TestSuite:
         """Generate a complete test suite with concurrent requests.
 
+        Generates multiple variations per pattern based on pattern.variations.
+
         Args:
             patterns: List of error patterns to generate. Defaults to all ERROR_PATTERNS.
             use_search_for_complex: If True, uses Google Search for complex patterns.
@@ -680,29 +414,44 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
         """
         patterns = patterns or ERROR_PATTERNS
 
+        # Calculate total expected cases
+        total_variations = sum(p.variations for p in patterns)
+        print(f"Generating {total_variations} test cases from {len(patterns)} patterns...")
+
         # Use async context manager for proper resource cleanup
         async with self.client.aio as aclient:
-            # Create tasks for all patterns
+            # Create tasks for all pattern variations
             tasks = []
+            task_info = []  # Track (pattern, variation_num) for error reporting
+
             for pattern in patterns:
                 use_search = use_search_for_complex and pattern.complexity == "complex"
-                task = self._generate_with_logging(aclient, pattern, use_search)
-                tasks.append(task)
+                # Generate multiple variations per pattern
+                for var_num in range(1, pattern.variations + 1):
+                    task = self._generate_with_logging(aclient, pattern, var_num, use_search)
+                    tasks.append(task)
+                    task_info.append((pattern, var_num))
 
             # Run concurrently (rate-limited by semaphore)
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Collect successful results
         test_cases: list[TestCase] = []
-        for pattern, result in zip(patterns, results, strict=False):
+        failed_count = 0
+        for (pattern, var_num), result in zip(task_info, results, strict=False):
             if isinstance(result, Exception):
-                print(f"Failed to generate {pattern.name}: {result}")
+                var_label = f" (v{var_num})" if pattern.variations > 1 else ""
+                print(f"Failed to generate {pattern.name}{var_label}: {result}")
+                failed_count += 1
             else:
                 test_cases.append(result)
 
+        if failed_count > 0:
+            print(f"\nWarning: {failed_count} test cases failed to generate")
+
         return TestSuite(
             name="PLC Error Classifier Evaluation Suite",
-            description="Synthetic test cases covering all 4 build stages",
+            description=f"Synthetic test cases covering all 4 build stages ({len(test_cases)} cases)",
             test_cases=test_cases,
             version="1.0.0",
         )
@@ -711,11 +460,13 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
         self,
         aclient: genai.Client,
         pattern: ErrorPattern,
+        variation_num: int,
         use_search: bool,
     ) -> TestCase:
         """Generate test case with progress logging."""
-        test_case = await self.generate_test_case(aclient, pattern, use_search)
-        print(f"Generated: {test_case.id} ({pattern.name})")
+        test_case = await self.generate_test_case(aclient, pattern, variation_num, use_search)
+        var_label = f" v{variation_num}" if pattern.variations > 1 else ""
+        print(f"Generated: {test_case.id} ({pattern.name}{var_label})")
         return test_case
 
     def save_test_suite(self, suite: TestSuite, filename: str = "test_suite.json") -> Path:
@@ -736,28 +487,69 @@ Please ensure the source_xml is syntactically valid XML. The errors should be SE
 
 async def main() -> None:
     """Generate test suite and save to file."""
-    print(f"Generating test suite with {len(ERROR_PATTERNS)} patterns...")
+    # Show planned distribution
+    dist = get_pattern_distribution()
+    print("=" * 60)
+    print("PLC Error Classifier - Test Suite Generator")
+    print("=" * 60)
     print(f"Timestamp: {datetime.now().isoformat()}")
+    print(f"Patterns: {len(ERROR_PATTERNS)}")
+    print(f"Target test cases: {dist['total_cases']}")
     print(f"Max concurrent requests: {MAX_CONCURRENT_REQUESTS}")
     print()
+
+    print("Planned distribution:")
+    print("  By Stage:")
+    for stage, count in sorted(dist["by_stage"].items()):
+        pct = count / dist["total_cases"] * 100
+        print(f"    {stage}: {count} ({pct:.0f}%)")
+
+    print("  By Severity:")
+    for sev, count in sorted(dist["by_severity"].items()):
+        pct = count / dist["total_cases"] * 100
+        print(f"    {sev}: {count} ({pct:.0f}%)")
+
+    print("  By Complexity:")
+    for comp, count in sorted(dist["by_complexity"].items()):
+        pct = count / dist["total_cases"] * 100
+        print(f"    {comp}: {count} ({pct:.0f}%)")
+
+    print()
+    print("-" * 60)
 
     generator = SyntheticTestGenerator()
     # Disable search, rely on few-shot examples and thinking
     suite = await generator.generate_test_suite(use_search_for_complex=False)
 
     output_path = generator.save_test_suite(suite)
-    print(f"\nSaved test suite to: {output_path}")
-    print(f"Total test cases: {len(suite.test_cases)}")
+    print()
+    print("=" * 60)
+    print(f"Saved test suite to: {output_path}")
+    print(f"Total test cases generated: {len(suite.test_cases)}")
 
-    # Print summary by stage
+    # Print actual summary by stage
     by_stage: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
+    by_complexity: dict[str, int] = {}
     for tc in suite.test_cases:
         stage = tc.expected_classification.stage
+        sev = tc.expected_classification.severity
+        comp = tc.expected_classification.complexity
         by_stage[stage] = by_stage.get(stage, 0) + 1
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+        by_complexity[comp] = by_complexity.get(comp, 0) + 1
 
-    print("\nBreakdown by stage:")
+    print("\nActual distribution:")
+    print("  By Stage:")
     for stage, count in sorted(by_stage.items()):
-        print(f"  {stage}: {count}")
+        print(f"    {stage}: {count}")
+    print("  By Severity:")
+    for sev, count in sorted(by_severity.items()):
+        print(f"    {sev}: {count}")
+    print("  By Complexity:")
+    for comp, count in sorted(by_complexity.items()):
+        print(f"    {comp}: {count}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

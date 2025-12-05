@@ -2,14 +2,18 @@
 
 import asyncio
 import os
+import random
 import time
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-from pydantic import BaseModel, Field
+
+# Import the actual classifier from the main package
+from plc_error_classifier.classifier import classify
+from plc_error_classifier.config import CLASSIFIER_MODEL
+from plc_error_classifier.models import ClassifyRequest, ClassifyResponse
 
 from .judge import SuggestionJudge
 from .metrics import (
@@ -23,7 +27,6 @@ from .metrics import (
 from .models import (
     ClassificationResult,
     EvaluationReport,
-    ExpectedClassification,
     TestCase,
     TestCaseResult,
     TestSuite,
@@ -35,35 +38,10 @@ load_dotenv()
 # Rate limiting: max concurrent API requests
 MAX_CONCURRENT_REQUESTS = 5
 
-# ============================================================================
-# Classifier Output Schema
-# ============================================================================
-
-
-class SuggestionOutput(BaseModel):
-    """Suggestion portion of the classifier output."""
-
-    root_cause: str = Field(description="What's actually wrong")
-    fix_description: str = Field(description="How to fix it")
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
-
-
-class ClassifierOutput(BaseModel):
-    """Full classifier output schema.
-
-    Reuses ExpectedClassification for consistency with ground truth format.
-    """
-
-    classification: ExpectedClassification
-    suggestion: SuggestionOutput
-
 
 # ============================================================================
 # Configuration
 # ============================================================================
-
-# Model to evaluate
-CLASSIFIER_MODEL = "gemini-2.5-flash"
 
 # Paths
 TEST_CASES_DIR = Path(__file__).parent / "test_cases"
@@ -71,107 +49,53 @@ REPORTS_DIR = Path(__file__).parent / "reports"
 
 
 # ============================================================================
-# Classifier Interface
+# Random XML Hiding for Comprehensive Testing
 # ============================================================================
 
-# TODO: Replace this placeholder with the actual classifier once implemented
-#
-# The actual classifier should be imported from:
-#   from plc_error_classifier.classifier import classify
-#
-# This placeholder exists so the evaluation framework can be tested independently.
-# It uses a simplified prompt and doesn't include:
-#   - Lightweight parser integration
-#   - Full IEC 61131-3 domain knowledge
-#   - Web search for deep_analysis
-#
-# Once the classifier is built, update this file to:
-#   1. Import the real classifier
-#   2. Remove this placeholder implementation
+# Seed for reproducibility (can be overridden)
+RANDOM_SEED = 42
 
-CLASSIFIER_SYSTEM_PROMPT = """You are an IEC 61131-3 PLC expert specializing in Beremiz toolchain errors.
+# Fraction of test cases per category to hide XML (0.5 = 50%)
+XML_HIDE_FRACTION = 0.5
 
-Analyze the provided error log and classify it.
 
-## Build Pipeline Stages
-1. **xml_validation**: PLCopen XML schema validation (XSD errors)
-2. **code_generation**: Beremiz Python code generator errors (Python tracebacks)
-3. **iec_compilation**: matiec/iec2c ST to C compiler errors
-4. **c_compilation**: gcc C compiler errors
+def should_hide_xml(test_case_id: str, category: str, seed: int = RANDOM_SEED) -> bool:
+    """Determine if XML should be hidden for a test case.
 
-## Classification Criteria
+    Uses a deterministic random selection based on test case ID and category
+    to ensure reproducibility across runs.
 
-### Severity
-- **blocking**: Build cannot complete (errors, tracebacks)
-- **warning**: Build may complete but with issues
-- **info**: Informational messages only
+    Args:
+        test_case_id: Unique identifier for the test case.
+        category: Error category of the test case.
+        seed: Random seed for reproducibility.
 
-### Complexity
-- **trivial**: Single-line fix, obvious from error message
-- **moderate**: Requires understanding context/type system
-- **complex**: Multiple related errors or architectural issues
-
-## Output Format
-Respond with JSON containing:
-```json
-{
-    "classification": {
-        "severity": "blocking|warning|info",
-        "stage": "xml_validation|code_generation|iec_compilation|c_compilation",
-        "complexity": "trivial|moderate|complex"
-    },
-    "suggestion": {
-        "root_cause": "What's actually wrong",
-        "fix_description": "How to fix it",
-        "confidence": 0.0-1.0
-    }
-}
-```"""
+    Returns:
+        True if XML should be hidden for this test case.
+    """
+    # Create a deterministic hash for this test case
+    rng = random.Random(f"{seed}:{category}:{test_case_id}")
+    return rng.random() < XML_HIDE_FRACTION
 
 
 async def classify_error(
-    aclient: genai.Client,
     error_log: str,
     source_xml: str | None = None,
-) -> dict:
-    """Classify an error using the Gemini model.
+) -> ClassifyResponse:
+    """Classify an error using the actual classifier.
 
-    This is a placeholder classifier for evaluation testing.
-    The actual classifier will be in src/plc_error_classifier/classifier.py.
+    This is a thin wrapper around the real classifier that handles
+    the conversion between evaluation and classifier interfaces.
 
     Args:
-        aclient: Async Gemini client (from client.aio context manager).
         error_log: The build output/error log to classify.
         source_xml: Optional PLCopen XML source for context.
 
     Returns:
-        Dict with classification and suggestion fields.
+        ClassifyResponse with classification and suggestions.
     """
-    # Build user prompt
-    user_content = f"Error Log:\n```\n{error_log}\n```"
-    if source_xml:
-        user_content += f"\n\nSource XML (for context):\n```xml\n{source_xml[:2000]}\n```"
-
-    # Per GEMINI_PROMPTING.md: temperature=0.0 for classification tasks
-    # Use response_json_schema for guaranteed structured output
-    config = types.GenerateContentConfig(
-        system_instruction=CLASSIFIER_SYSTEM_PROMPT,
-        temperature=0.0,  # Deterministic for evaluation
-        response_mime_type="application/json",
-        response_json_schema=ClassifierOutput.model_json_schema(),
-        thinking_config=types.ThinkingConfig(thinking_budget=1024),  # Standard thinking
-    )
-
-    # Use async API for scalability
-    response = await aclient.models.generate_content(
-        model=CLASSIFIER_MODEL,
-        contents=user_content,
-        config=config,
-    )
-
-    # Parse and validate with Pydantic
-    result = ClassifierOutput.model_validate_json(response.text)
-    return result.model_dump()
+    request = ClassifyRequest(error_log=error_log, source_xml=source_xml)
+    return await classify(request)
 
 
 # ============================================================================
@@ -194,16 +118,16 @@ class EvaluationRunner:
 
     async def evaluate_test_case(
         self,
-        classifier_client: genai.Client,
         judge_client: genai.Client,
         test_case: TestCase,
+        hide_xml: bool = False,
     ) -> TestCaseResult:
         """Evaluate a single test case.
 
         Args:
-            classifier_client: Async Gemini client for classification.
             judge_client: Async Gemini client for judge evaluation.
             test_case: The test case to evaluate.
+            hide_xml: If True, don't pass source_xml to classifier.
 
         Returns:
             TestCaseResult with classification and suggestion evaluation.
@@ -216,22 +140,24 @@ class EvaluationRunner:
             # Time the classification
             start_time = time.time()
 
-            # Classify the error
-            result = await classify_error(
-                classifier_client,
+            # Determine if XML should be hidden for this test case
+            source_xml = None if hide_xml else test_case.source_xml
+
+            # Classify the error using the actual classifier
+            response = await classify_error(
                 test_case.error_log,
-                test_case.source_xml,
+                source_xml,
             )
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # Extract predictions
-            classification = result.get("classification", {})
-            suggestion = result.get("suggestion", {})
+            # Extract predictions from ClassifyResponse
+            predicted_severity = response.classification.severity
+            predicted_stage = response.classification.stage
+            predicted_complexity = response.classification.complexity
 
-            predicted_severity = classification.get("severity", "unknown")
-            predicted_stage = classification.get("stage", "unknown")
-            predicted_complexity = classification.get("complexity", "unknown")
+            # Get the best suggestion (first one, highest confidence)
+            best_suggestion = response.suggestions[0] if response.suggestions else None
 
             # Build classification result
             expected = test_case.expected_classification
@@ -259,9 +185,11 @@ class EvaluationRunner:
                 test_case_id=test_case.id,
                 error_log=test_case.error_log,
                 expected_fix=test_case.expected_fix,
-                predicted_root_cause=suggestion.get("root_cause", ""),
-                predicted_fix_description=suggestion.get("fix_description", ""),
-                confidence=suggestion.get("confidence", 0.5),
+                predicted_root_cause=best_suggestion.root_cause if best_suggestion else "",
+                predicted_fix_description=best_suggestion.fix_description
+                if best_suggestion
+                else "",
+                confidence=best_suggestion.confidence if best_suggestion else 0.5,
             )
 
             return TestCaseResult(
@@ -274,50 +202,71 @@ class EvaluationRunner:
 
     async def _evaluate_with_logging(
         self,
-        classifier_client: genai.Client,
         judge_client: genai.Client,
         test_case: TestCase,
         index: int,
         total: int,
+        hide_xml: bool = False,
     ) -> TestCaseResult | None:
         """Evaluate a test case with progress logging."""
         try:
-            result = await self.evaluate_test_case(classifier_client, judge_client, test_case)
+            xml_status = " (no XML)" if hide_xml else ""
+            result = await self.evaluate_test_case(judge_client, test_case, hide_xml)
             status = "✓" if result.classification.all_correct else "✗"
             print(
-                f"  [{index}/{total}] {test_case.name}... {status} ({result.response_time_ms:.0f}ms)"
+                f"  [{index}/{total}] {test_case.name}{xml_status}... {status} ({result.response_time_ms:.0f}ms)"
             )
             return result
         except Exception as e:
             print(f"  [{index}/{total}] {test_case.name}... ERROR: {e}")
             return None
 
-    async def run_evaluation(self, suite: TestSuite) -> EvaluationReport:
+    async def run_evaluation(
+        self,
+        suite: TestSuite,
+        random_xml_hiding: bool = True,
+    ) -> EvaluationReport:
         """Run evaluation on entire test suite concurrently.
 
         Args:
             suite: The test suite to evaluate.
+            random_xml_hiding: If True, randomly hide XML for ~50% of test cases
+                              per category for comprehensive testing.
 
         Returns:
             EvaluationReport with all metrics and results.
         """
-        print(f"Running evaluation on {len(suite.test_cases)} test cases...")
+        # Count how many cases will have XML hidden
+        if random_xml_hiding:
+            hidden_count = sum(
+                1
+                for tc in suite.test_cases
+                if tc.source_xml and should_hide_xml(tc.id, tc.error_category)
+            )
+            print(f"Running evaluation on {len(suite.test_cases)} test cases...")
+            print(f"  (XML hidden for {hidden_count} cases to test inference quality)")
+        else:
+            print(f"Running evaluation on {len(suite.test_cases)} test cases...")
 
-        # Use separate async contexts for classifier and judge
-        async with (
-            self.client.aio as classifier_client,
-            self.judge.client.aio as judge_client,
-        ):
-            tasks = [
-                self._evaluate_with_logging(
-                    classifier_client,
-                    judge_client,
-                    test_case,
-                    i,
-                    len(suite.test_cases),
+        # Use async context for judge only (classifier handles its own client)
+        async with self.judge.client.aio as judge_client:
+            tasks = []
+            for i, test_case in enumerate(suite.test_cases, 1):
+                # Determine if XML should be hidden for this test case
+                hide_xml = (
+                    random_xml_hiding
+                    and test_case.source_xml is not None
+                    and should_hide_xml(test_case.id, test_case.error_category)
                 )
-                for i, test_case in enumerate(suite.test_cases, 1)
-            ]
+                tasks.append(
+                    self._evaluate_with_logging(
+                        judge_client,
+                        test_case,
+                        i,
+                        len(suite.test_cases),
+                        hide_xml,
+                    )
+                )
             all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out None results and exceptions

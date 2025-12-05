@@ -5,11 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from evaluation.generator import (
-    ERROR_PATTERNS,
-    GeneratedTestCase,
-    validate_xml,
-)
+from evaluation.generator import GeneratedTestCase, validate_xml
 from evaluation.judge import JudgeEvaluation, SuggestionJudge
 from evaluation.metrics import (
     calculate_classification_metrics,
@@ -23,14 +19,18 @@ from evaluation.models import (
     COMPLEXITY_HEURISTICS,
     SEVERITY_RULES,
     STAGE_INDICATORS,
+    ClassificationMetrics,
     ClassificationResult,
     ExpectedClassification,
     ExpectedFix,
+    PerformanceMetrics,
+    SuggestionMetrics,
     SuggestionResult,
     TestCase,
     TestCaseResult,
     TestSuite,
 )
+from evaluation.patterns import ERROR_PATTERNS
 
 # ============================================================================
 # Test Evaluation Models
@@ -787,3 +787,307 @@ class TestSuggestionJudgeWithMock:
             pytest.raises(ValueError, match="GEMINI_API_KEY"),
         ):
             SuggestionJudge(api_key=None)
+
+
+# ============================================================================
+# Test Bootstrap Statistical Functions
+# ============================================================================
+
+
+class TestBootstrapFunctions:
+    """Tests for bootstrap statistical functions."""
+
+    def test_bootstrap_proportion_basic(self) -> None:
+        """Test bootstrap CI for a proportion."""
+        from evaluation.metrics import bootstrap_proportion
+
+        # 80% accuracy: 80 successes out of 100
+        ci = bootstrap_proportion(successes=80, total=100, n_bootstrap=500)
+
+        assert ci.point_estimate == 0.8
+        assert ci.ci_lower <= 0.8 <= ci.ci_upper
+        assert ci.ci_lower >= 0.0
+        assert ci.ci_upper <= 1.0
+        assert ci.confidence_level == 0.95
+        assert ci.std_error > 0
+
+    def test_bootstrap_proportion_empty(self) -> None:
+        """Test bootstrap with zero total."""
+        from evaluation.metrics import bootstrap_proportion
+
+        ci = bootstrap_proportion(successes=0, total=0)
+
+        assert ci.point_estimate == 0.0
+        assert ci.ci_lower == 0.0
+        assert ci.ci_upper == 0.0
+
+    def test_bootstrap_proportion_perfect(self) -> None:
+        """Test bootstrap with perfect accuracy."""
+        from evaluation.metrics import bootstrap_proportion
+
+        ci = bootstrap_proportion(successes=100, total=100, n_bootstrap=500)
+
+        assert ci.point_estimate == 1.0
+        assert ci.ci_lower >= 0.95  # Should be close to 1.0
+        assert ci.ci_upper == 1.0
+
+    def test_bootstrap_mean_basic(self) -> None:
+        """Test bootstrap CI for a mean."""
+        from evaluation.metrics import bootstrap_mean
+
+        values = [0.7, 0.8, 0.9, 0.85, 0.75, 0.82, 0.88, 0.79]
+        ci = bootstrap_mean(values, n_bootstrap=500)
+
+        expected_mean = sum(values) / len(values)
+        assert abs(ci.point_estimate - expected_mean) < 0.001
+        assert ci.ci_lower <= expected_mean <= ci.ci_upper
+        assert ci.std_error > 0
+
+    def test_bootstrap_mean_empty(self) -> None:
+        """Test bootstrap mean with empty data."""
+        from evaluation.metrics import bootstrap_mean
+
+        ci = bootstrap_mean([])
+
+        assert ci.point_estimate == 0.0
+        assert ci.ci_lower == 0.0
+        assert ci.ci_upper == 0.0
+
+    def test_bootstrap_percentile_basic(self) -> None:
+        """Test bootstrap CI for a percentile."""
+        from evaluation.metrics import bootstrap_percentile
+
+        values = list(range(100, 600, 10))  # 100, 110, ..., 590
+        ci = bootstrap_percentile(values, percentile=95.0, n_bootstrap=500)
+
+        assert ci.point_estimate > 500  # p95 should be near the high end
+        assert ci.ci_lower <= ci.point_estimate <= ci.ci_upper
+
+    def test_bootstrap_reproducibility(self) -> None:
+        """Test that bootstrap results are reproducible with same seed."""
+        from evaluation.metrics import bootstrap_proportion
+
+        ci1 = bootstrap_proportion(80, 100, random_seed=42)
+        ci2 = bootstrap_proportion(80, 100, random_seed=42)
+
+        assert ci1.ci_lower == ci2.ci_lower
+        assert ci1.ci_upper == ci2.ci_upper
+
+    def test_confidence_interval_margin_of_error(self) -> None:
+        """Test ConfidenceInterval margin_of_error property."""
+        from evaluation.models import ConfidenceInterval
+
+        ci = ConfidenceInterval(
+            point_estimate=0.8,
+            ci_lower=0.75,
+            ci_upper=0.85,
+        )
+
+        assert ci.margin_of_error == pytest.approx(0.05)
+
+
+class TestMetricsWithConfidenceIntervals:
+    """Tests for metrics calculation with CI enabled."""
+
+    def test_classification_metrics_with_ci(self) -> None:
+        """Test classification metrics with CI calculation."""
+        results = [
+            ClassificationResult(
+                test_case_id=f"test_{i}",
+                predicted_severity="blocking",
+                predicted_stage="iec_compilation",
+                predicted_complexity="trivial",
+                expected_severity="blocking",
+                expected_stage="iec_compilation",
+                expected_complexity="trivial",
+                severity_correct=True,
+                stage_correct=True,
+                complexity_correct=True,
+                all_correct=True,
+            )
+            for i in range(80)
+        ] + [
+            ClassificationResult(
+                test_case_id=f"test_fail_{i}",
+                predicted_severity="warning",
+                predicted_stage="code_generation",
+                predicted_complexity="moderate",
+                expected_severity="blocking",
+                expected_stage="iec_compilation",
+                expected_complexity="trivial",
+                severity_correct=False,
+                stage_correct=False,
+                complexity_correct=False,
+                all_correct=False,
+            )
+            for i in range(20)
+        ]
+
+        metrics = calculate_classification_metrics(results, compute_ci=True, n_bootstrap=500)
+
+        # Check point estimates
+        assert metrics.overall_accuracy == 0.8
+        assert metrics.severity_accuracy == 0.8
+
+        # Check CIs are populated
+        assert metrics.overall_accuracy_ci is not None
+        assert metrics.severity_accuracy_ci is not None
+        assert metrics.stage_accuracy_ci is not None
+        assert metrics.complexity_accuracy_ci is not None
+
+        # Check CI bounds make sense
+        assert metrics.overall_accuracy_ci.ci_lower <= 0.8
+        assert metrics.overall_accuracy_ci.ci_upper >= 0.8
+        assert metrics.overall_accuracy_ci.std_error > 0
+
+    def test_suggestion_metrics_with_ci(self) -> None:
+        """Test suggestion metrics with CI calculation."""
+        results = [
+            SuggestionResult(
+                test_case_id=f"test_{i}",
+                predicted_root_cause="cause",
+                predicted_fix_description="fix",
+                confidence=0.9,
+                expected_root_cause="cause",
+                expected_fix_description="fix",
+                root_cause_score=0.7 + (i % 3) * 0.1,
+                fix_quality_score=0.8,
+                overall_score=0.75 + (i % 3) * 0.05,
+                judge_reasoning="test",
+            )
+            for i in range(50)
+        ]
+
+        metrics = calculate_suggestion_metrics(results, compute_ci=True, n_bootstrap=500)
+
+        # Check CIs are populated
+        assert metrics.root_cause_score_ci is not None
+        assert metrics.fix_quality_score_ci is not None
+        assert metrics.overall_score_ci is not None
+
+        # Check point estimates match averages
+        expected_avg = metrics.avg_overall_score
+        assert abs(metrics.overall_score_ci.point_estimate - expected_avg) < 0.001
+
+    def test_performance_metrics_with_ci(self) -> None:
+        """Test performance metrics with CI calculation."""
+        results = [
+            TestCaseResult(
+                test_case_id=f"test_{i}",
+                test_case_name=f"test_{i}",
+                classification=ClassificationResult(
+                    test_case_id=f"test_{i}",
+                    predicted_severity="blocking",
+                    predicted_stage="iec_compilation",
+                    predicted_complexity="trivial",
+                    expected_severity="blocking",
+                    expected_stage="iec_compilation",
+                    expected_complexity="trivial",
+                    severity_correct=True,
+                    stage_correct=True,
+                    complexity_correct=True,
+                    all_correct=True,
+                ),
+                suggestion=SuggestionResult(
+                    test_case_id=f"test_{i}",
+                    predicted_root_cause="test",
+                    predicted_fix_description="test",
+                    confidence=0.9,
+                    expected_root_cause="test",
+                    expected_fix_description="test",
+                    root_cause_score=0.9,
+                    fix_quality_score=0.9,
+                    overall_score=0.9,
+                    judge_reasoning="test",
+                ),
+                response_time_ms=100.0 + i * 10,  # 100, 110, ..., 590
+            )
+            for i in range(50)
+        ]
+
+        metrics = calculate_performance_metrics(results, compute_ci=True, n_bootstrap=500)
+
+        # Check CIs are populated
+        assert metrics.avg_response_time_ci is not None
+        assert metrics.p95_response_time_ci is not None
+
+        # Check point estimates match
+        expected_avg = sum(100 + i * 10 for i in range(50)) / 50
+        assert abs(metrics.avg_response_time_ci.point_estimate - expected_avg) < 1
+
+
+class TestFormatFunctions:
+    """Tests for formatting functions."""
+
+    def test_format_ci_as_percent(self) -> None:
+        """Test CI formatting as percentage."""
+        from evaluation.metrics import format_ci
+        from evaluation.models import ConfidenceInterval
+
+        ci = ConfidenceInterval(
+            point_estimate=0.85,
+            ci_lower=0.80,
+            ci_upper=0.90,
+        )
+
+        formatted = format_ci(ci, as_percent=True)
+        assert "85.0%" in formatted
+        assert "80.0%" in formatted
+        assert "90.0%" in formatted
+
+    def test_format_ci_as_decimal(self) -> None:
+        """Test CI formatting as decimal."""
+        from evaluation.metrics import format_ci
+        from evaluation.models import ConfidenceInterval
+
+        ci = ConfidenceInterval(
+            point_estimate=0.85,
+            ci_lower=0.80,
+            ci_upper=0.90,
+        )
+
+        formatted = format_ci(ci, as_percent=False)
+        assert "0.850" in formatted
+        assert "0.800" in formatted
+        assert "0.900" in formatted
+
+    def test_format_ci_none(self) -> None:
+        """Test formatting None CI."""
+        from evaluation.metrics import format_ci
+
+        assert format_ci(None) == "N/A"
+
+    def test_format_statistical_summary(self) -> None:
+        """Test statistical summary formatting."""
+        from evaluation.metrics import format_statistical_summary
+
+        classification_metrics = ClassificationMetrics(
+            total_cases=100,
+            severity_accuracy=0.9,
+            stage_accuracy=0.85,
+            complexity_accuracy=0.8,
+            overall_accuracy=0.75,
+        )
+        suggestion_metrics = SuggestionMetrics(
+            total_cases=100,
+            avg_root_cause_score=0.8,
+            avg_fix_quality_score=0.85,
+            avg_overall_score=0.82,
+        )
+        performance_metrics = PerformanceMetrics(
+            total_cases=100,
+            avg_response_time_ms=250.0,
+            min_response_time_ms=100.0,
+            max_response_time_ms=500.0,
+            p95_response_time_ms=450.0,
+        )
+
+        summary = format_statistical_summary(
+            classification_metrics, suggestion_metrics, performance_metrics
+        )
+
+        assert "STATISTICAL SUMMARY" in summary
+        assert "CLASSIFICATION ACCURACY" in summary
+        assert "SUGGESTION QUALITY" in summary
+        assert "PERFORMANCE" in summary
+        assert "100 test cases" in summary

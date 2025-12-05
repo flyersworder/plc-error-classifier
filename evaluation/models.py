@@ -117,6 +117,27 @@ class TestCaseResult(BaseModel):
 # ============================================================================
 
 
+class ConfidenceInterval(BaseModel):
+    """Confidence interval for a metric.
+
+    Represents the uncertainty in a point estimate using bootstrap resampling.
+    """
+
+    point_estimate: float = Field(description="The observed value of the metric")
+    ci_lower: float = Field(description="Lower bound of confidence interval")
+    ci_upper: float = Field(description="Upper bound of confidence interval")
+    confidence_level: float = Field(
+        default=0.95, ge=0.0, le=1.0, description="Confidence level (e.g., 0.95 for 95%)"
+    )
+    n_bootstrap: int = Field(default=1000, description="Number of bootstrap samples used")
+    std_error: float = Field(default=0.0, ge=0.0, description="Bootstrap standard error")
+
+    @property
+    def margin_of_error(self) -> float:
+        """Half-width of the confidence interval."""
+        return (self.ci_upper - self.ci_lower) / 2
+
+
 class ClassificationMetrics(BaseModel):
     """Aggregate metrics for classification accuracy."""
 
@@ -136,6 +157,12 @@ class ClassificationMetrics(BaseModel):
     # Breakdown by severity
     accuracy_by_severity: dict[str, float] = {}
 
+    # Confidence intervals (optional, populated when bootstrap is run)
+    severity_accuracy_ci: ConfidenceInterval | None = None
+    stage_accuracy_ci: ConfidenceInterval | None = None
+    complexity_accuracy_ci: ConfidenceInterval | None = None
+    overall_accuracy_ci: ConfidenceInterval | None = None
+
 
 class SuggestionMetrics(BaseModel):
     """Aggregate metrics for suggestion quality."""
@@ -152,6 +179,11 @@ class SuggestionMetrics(BaseModel):
     medium_quality_count: int = 0  # 0.5 <= score < 0.8
     low_quality_count: int = 0  # score < 0.5
 
+    # Confidence intervals (optional, populated when bootstrap is run)
+    root_cause_score_ci: ConfidenceInterval | None = None
+    fix_quality_score_ci: ConfidenceInterval | None = None
+    overall_score_ci: ConfidenceInterval | None = None
+
 
 class PerformanceMetrics(BaseModel):
     """Performance timing metrics."""
@@ -161,6 +193,10 @@ class PerformanceMetrics(BaseModel):
     min_response_time_ms: float
     max_response_time_ms: float
     p95_response_time_ms: float
+
+    # Confidence intervals (optional, populated when bootstrap is run)
+    avg_response_time_ci: ConfidenceInterval | None = None
+    p95_response_time_ci: ConfidenceInterval | None = None
 
 
 class EvaluationReport(BaseModel):
