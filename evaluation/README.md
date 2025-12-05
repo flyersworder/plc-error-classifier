@@ -160,14 +160,23 @@ Generates synthetic test cases using Gemini Flash-Lite.
 
 #### Error Patterns
 
-The generator includes 21 pre-defined error patterns covering all 4 build stages:
+Error patterns are defined in `patterns.py` with 55 patterns generating 100 test cases:
 
-| Stage | Count | Example Patterns |
-|-------|-------|------------------|
-| xml_validation | 3 | datetime format, missing child element, invalid attribute |
-| code_generation | 4 | empty body NoneType, no body defined, undefined block, SFC errors |
-| iec_compilation | 12 | constant assignment, undeclared variable, type mismatch, FOR loop errors |
-| c_compilation | 2 | undefined reference, missing header |
+| Stage | Patterns | Test Cases | Example Patterns |
+|-------|----------|------------|------------------|
+| xml_validation | 10 | 20 (20%) | datetime format, missing child element, namespace mismatch |
+| code_generation | 12 | 25 (25%) | no body defined, NoneType error, SFC transition errors |
+| iec_compilation | 23 | 40 (40%) | constant assignment, undeclared variable, type mismatch |
+| c_compilation | 10 | 15 (15%) | undefined reference, missing header, linker errors |
+
+**Distribution by Complexity:**
+- Trivial: 36 cases (36%) - obvious fix from error message
+- Moderate: 44 cases (44%) - requires context understanding
+- Complex: 20 cases (20%) - requires investigation/debugging
+
+**Distribution by Severity:**
+- Blocking: 83 cases (83%) - build fails
+- Warning: 17 cases (17%) - build continues with issues
 
 #### Usage
 

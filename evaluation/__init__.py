@@ -7,11 +7,7 @@ This module provides:
 - Evaluation runner and reporting
 """
 
-from .generator import (
-    ERROR_PATTERNS,
-    ErrorPattern,
-    SyntheticTestGenerator,
-)
+from .generator import SyntheticTestGenerator
 from .judge import SuggestionJudge, evaluate_batch
 from .metrics import (
     calculate_classification_metrics,
@@ -34,6 +30,7 @@ from .models import (
     TestCaseResult,
     TestSuite,
 )
+from .patterns import ERROR_PATTERNS, ErrorPattern
 from .run_eval import EvaluationRunner, format_report
 
 __all__ = [
