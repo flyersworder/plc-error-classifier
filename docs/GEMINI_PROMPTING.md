@@ -283,10 +283,13 @@ Analyze PLC compilation error logs and provide structured classification.
 - iec_compilation: matiec/iec2c compiler errors
 - c_compilation: gcc/linker errors
 
-### Complexity
-- trivial: Single error, obvious one-line fix
-- moderate: Requires understanding context/types
-- complex: Multiple errors, architectural issues
+### Complexity (Cognitive Load for PLC Programmer)
+- trivial: Error clearly states problem AND fix is immediately obvious
+  - Examples: "Variable not declared", "Assignment to CONSTANT not allowed"
+- moderate: Error understandable but requires investigation or tracing
+  - Examples: C syntax errors (trace to PLC source), XML schema errors
+- complex: Error is cryptic or requires significant investigation
+  - Examples: Linker errors, Python tracebacks (NoneType, KeyError)
 
 ## Output Format
 Respond ONLY with valid JSON matching this schema:

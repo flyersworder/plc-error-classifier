@@ -49,13 +49,25 @@ Detect by matching patterns in priority order:
 
 Decision: Match FIRST stage whose patterns appear in the PRIMARY error.
 
-### Complexity (Cognitive Load to Understand and Fix)
-- **trivial**: Error message clearly states the problem AND the fix is immediately obvious.
-  User reads error -> knows exactly what to do. Example: "Variable 'X' not declared" -> add declaration.
-- **moderate**: Error message indicates the problem but user needs to think, check documentation,
-  or understand context to determine the fix. Example: "undefined reference to 'X'" -> find missing library.
-- **complex**: Error message is cryptic, misleading, or requires significant investigation/debugging
-  to understand the root cause. Example: Python traceback with no clear PLC-related message.
+### Complexity (Cognitive Load for PLC Programmer)
+Target user: PLC programmers with electrical/mechanical engineering background who know C/C++ and Python.
+
+- **trivial**: Error message clearly states the problem AND fix is immediately obvious.
+  User reads error → knows exactly what to change.
+  - IEC compiler messages: "Variable not declared", "Assignment to CONSTANT not allowed"
+  - Clear XML schema errors: "invalid xs:dateTime format"
+
+- **moderate**: Error indicates problem but requires investigation or tracing back to source.
+  User understands the error but needs to find where/why it occurred.
+  - C syntax errors (user knows C, but must trace back to PLC code)
+  - XML structure errors requiring schema knowledge
+  - SFC/FBD connection errors
+
+- **complex**: Error is cryptic, requires build system knowledge, or significant investigation.
+  User thinks "What does this even mean?" or "Where do I start?"
+  - Linker errors: `undefined reference`, `cannot find -l` (build system investigation)
+  - Python tracebacks: `NoneType`, `KeyError` (cryptic without Beremiz internals knowledge)
+  - Cascading errors where root cause is hidden
 
 Decision: Default to `moderate` if uncertain.
 
@@ -125,7 +137,7 @@ AttributeError: 'NoneType' object has no attribute 'upper'
 </error_log>
 </input>
 <output>
-{{"classification":{{"severity":"blocking","stage":"code_generation","complexity":"moderate"}},"suggestions":[{{"root_cause":"POU body is empty or None - no code to compile","fix_description":"Add ST code to the POU body section","code_before":"<body>\\n  <ST>\\n    <!-- empty -->\\n  </ST>\\n</body>","code_after":"<body>\\n  <ST>\\n    <xhtml:p>(* Your ST code here *)</xhtml:p>\\n  </ST>\\n</body>","confidence":0.75}},{{"root_cause":"POU interface may be missing required elements","fix_description":"Verify POU has both interface and body sections defined","code_before":"<pou name=\\"program0\\">\\n  <!-- missing interface/body -->\\n</pou>","code_after":"<pou name=\\"program0\\">\\n  <interface><localVars/></interface>\\n  <body><ST>...</ST></body>\\n</pou>","confidence":0.60}}]}}
+{{"classification":{{"severity":"blocking","stage":"code_generation","complexity":"complex"}},"suggestions":[{{"root_cause":"POU body is empty or None - no code to compile","fix_description":"Add ST code to the POU body section","code_before":"<body>\\n  <ST>\\n    <!-- empty -->\\n  </ST>\\n</body>","code_after":"<body>\\n  <ST>\\n    <xhtml:p>(* Your ST code here *)</xhtml:p>\\n  </ST>\\n</body>","confidence":0.75}},{{"root_cause":"POU interface may be missing required elements","fix_description":"Verify POU has both interface and body sections defined","code_before":"<pou name=\\"program0\\">\\n  <!-- missing interface/body -->\\n</pou>","code_after":"<pou name=\\"program0\\">\\n  <interface><localVars/></interface>\\n  <body><ST>...</ST></body>\\n</pou>","confidence":0.60}}]}}
 </output>
 </example>
 
@@ -142,6 +154,22 @@ Compiling C Program to target ...
 </input>
 <output>
 {{"classification":{{"severity":"warning","stage":"xml_validation","complexity":"trivial"}},"suggestions":[{{"root_cause":"DateTime format uses space instead of ISO 8601 T separator","fix_description":"Change datetime to ISO 8601 format with T separator","code_before":"<fileHeader ... creationDateTime=\\"2024-03-15 10:30:00\\">","code_after":"<fileHeader ... creationDateTime=\\"2024-03-15T10:30:00\\">","confidence":0.90}}]}}
+</output>
+</example>
+
+<example>
+<input>
+<error_log>
+[10:15:30]: Cannot build project.
+Compiling C Program to target ...
+stderr: /tmp/build/plc.c:142:5: error: expected ';' before 'IF'
+     IF (condition) THEN
+     ^
+Error: C compilation of target failed.
+</error_log>
+</input>
+<output>
+{{"classification":{{"severity":"blocking","stage":"c_compilation","complexity":"moderate"}},"suggestions":[{{"root_cause":"Generated C code has syntax error - likely from malformed ST code that wasn't caught by IEC compiler","fix_description":"Check the ST code around line 142 equivalent for missing semicolons or malformed statements","code_before":"result := calculation\\nIF (condition) THEN","code_after":"result := calculation;\\nIF (condition) THEN","confidence":0.75}}]}}
 </output>
 </example>
 

@@ -24,8 +24,8 @@ CLASSIFIER_MODEL = "gemini-2.5-flash"
 # Temperature: 0.0 for deterministic classification
 TEMPERATURE = 0.0
 
-# Thinking budget: 256 for faster response while maintaining quality
-THINKING_BUDGET = 256
+# Thinking budget: 0 to disable thinking for lowest latency (<3s target)
+THINKING_BUDGET = 0
 
 # =============================================================================
 # Paths

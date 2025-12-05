@@ -174,6 +174,7 @@ ID: {pattern_id}
 Name: {pattern_name}
 Stage: {stage}
 Severity: {severity}
+Complexity: {complexity}
 Error Message: {error_message}
 Description: {description}
 </pattern>
@@ -216,9 +217,33 @@ Description: {description}
 </example>
 </examples>
 
+<complexity_guidelines>
+The error log MUST match the specified complexity level:
+
+TRIVIAL: Error message clearly states the problem AND fix is immediately obvious.
+- Use DIRECT, CLEAR error messages (e.g., "Variable 'X' not declared", "Type mismatch")
+- Include the exact offending element in the error (variable name, line number)
+- NO cascading errors, NO tracebacks, NO cryptic messages
+- A competent engineer reads it and knows EXACTLY what to fix
+
+MODERATE: Error indicates the problem but requires some investigation or tracing.
+- Error is understandable but requires context to fix
+- May need to trace from generated code back to source
+- Include enough context but don't spell out the exact fix
+- Examples: C syntax errors (understand error but must find PLC source), XML schema errors
+
+COMPLEX: Error is cryptic, misleading, or requires significant investigation.
+- Use CRYPTIC messages: tracebacks, NoneType errors, cascading errors
+- Include multiple unrelated-looking errors where root cause is hidden
+- Linker errors (undefined reference) where source is unclear
+- Python internal errors with no clear user action
+- Engineer thinks: "What does this even mean?" or "Where do I start?"
+</complexity_guidelines>
+
 <task>
 Generate a test case for the "{pattern_name}" pattern.
 - Stage must be: {stage}
+- Complexity must be: {complexity} (CRITICAL: follow complexity_guidelines above!)
 - Error log MUST contain: {error_message}
 - Use different names/values than the examples
 - source_xml must be valid, parseable XML
