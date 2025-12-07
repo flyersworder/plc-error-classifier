@@ -22,7 +22,7 @@ AI-powered system that classifies PLC compilation errors and suggests fixes for 
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/flyersworder/plc-error-classifier.git
 cd plc-error-classifier
 
 # Install dependencies
@@ -333,3 +333,32 @@ See [Thinking Budget Tradeoff](#thinking-budget-tradeoff) for detailed benchmark
 
 - **Structured Output**: Uses Gemini's JSON schema enforcement for reliable parsing
 - **Few-Shot Examples**: Classifier prompt includes examples for each error stage to improve accuracy
+
+## Future Evolution
+
+The evaluation framework is designed to support continuous improvement through iterative feedback loops:
+
+```
+Real Errors → Classifier → Evaluation → Tune Prompts/Knowledge → Repeat
+     ↑                          │
+     └──── Human Feedback ◄─────┘
+```
+
+**Potential improvements:**
+
+| Component | Current | Future |
+|-----------|---------|--------|
+| Test cases | Synthetic patterns | Real production errors from Beremiz users |
+| Coverage | ~20 error patterns | 100+ patterns with edge cases |
+| Metrics | Accuracy, latency | User satisfaction, fix success rate |
+| Feedback | Manual | Automated from IDE/build system integration |
+| Tuning | Manual prompt edits | Automated prompt optimization (DSPy, etc.) |
+
+**What's already in place:**
+
+- Structured `EvalTestCase` format makes adding real errors trivial
+- Bootstrap confidence intervals detect regressions from prompt changes
+- Separated knowledge base (`docs/IEC_61131_KNOWLEDGE.md`) enables A/B testing
+- LLM-as-judge provides scalable suggestion quality assessment
+
+This foundation enables a reinforcement learning-style loop where real-world feedback continuously improves classification accuracy and suggestion quality.
