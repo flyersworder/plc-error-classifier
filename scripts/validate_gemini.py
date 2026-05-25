@@ -48,7 +48,7 @@ def load_sample(name: str) -> str:
 
 def test_model(model_name: str, error_log: str, error_name: str) -> dict[str, str]:
     """Test a model with an error log."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Model: {model_name}")
     print(f"Error: {error_name}")
     print("=" * 60)
