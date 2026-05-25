@@ -508,8 +508,7 @@ def format_ci(ci: ConfidenceInterval | None, as_percent: bool = False) -> str:
 
     if as_percent:
         return (
-            f"{ci.point_estimate * 100:.1f}% "
-            f"[{ci.ci_lower * 100:.1f}%, {ci.ci_upper * 100:.1f}%]"
+            f"{ci.point_estimate * 100:.1f}% [{ci.ci_lower * 100:.1f}%, {ci.ci_upper * 100:.1f}%]"
         )
     else:
         return f"{ci.point_estimate:.3f} [{ci.ci_lower:.3f}, {ci.ci_upper:.3f}]"
